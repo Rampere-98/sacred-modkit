@@ -351,6 +351,15 @@ bool AgentSave::worldChanging()
 
 bool AgentSave::newGameFromMenu(int gameClass)
 {
+    // A new game: the givers come to in the last one are new again (AutoAttack's SacredBild-givers.txt).
+    if (!g_deathsPath.empty())
+    {
+        const std::wstring givers = g_deathsPath.substr(0, g_deathsPath.find_last_of(L"\\/") + 1) + L"SacredBild-givers.txt";
+        if (DeleteFileW(givers.c_str()))
+        {
+            LOG("AgentSave: a new game: the givers come to before forgotten");
+        }
+    }
     // The two functions where block S 10 has them, else the clicks as before.
     static const uint8_t kStartSig[] = {0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF, 0x68};
     static const uint8_t kClassSig[] = {0x8B, 0x44, 0x24, 0x04, 0x89, 0x41, 0x44, 0xC2, 0x04, 0x00};

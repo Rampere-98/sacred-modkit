@@ -3667,6 +3667,46 @@ namespace
         return true;
     }
 
+    // The givers come to (or left after 20 min), kept beside the exe across the copy's restarts (the coordinator,
+    // 2026-11-16: each install walked to them all again): SacredBild-givers.txt, one quest number a line, «-» before
+    // one left unreached; AgentSave removes it when a new game begins.
+    std::wstring giversPath()
+    {
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        const std::wstring path = exe;
+        return path.substr(0, path.find_last_of(L"\\/") + 1) + L"SacredBild-givers.txt";
+    }
+
+    void readGivers(std::vector<int32_t>& visited)
+    {
+        FILE* f = _wfopen(giversPath().c_str(), L"r");
+        if (!f)
+        {
+            return;
+        }
+        char line[32];
+        while (std::fgets(line, sizeof(line), f))
+        {
+            const int32_t number = std::atoi(line[0] == '-' ? line + 1 : line);
+            if (number > 0 && std::find(visited.begin(), visited.end(), number) == visited.end())
+            {
+                visited.push_back(number);
+            }
+        }
+        std::fclose(f);
+        LOG("AutoAttack: {} quest givers come to before, kept from the last runs", visited.size());
+    }
+
+    void noteGiver(int32_t number, bool reached)
+    {
+        if (FILE* f = _wfopen(giversPath().c_str(), L"a"))
+        {
+            std::fprintf(f, reached ? "%d\n" : "-%d\n", number);
+            std::fclose(f);
+        }
+    }
+
     // The giver followed now and since when, for the 20 min a giver is gone to at most (its tile may not be reached:
     // the script gives no layer).
     int32_t g_giverFollowed = 0;
@@ -3909,13 +3949,19 @@ namespace
             static std::unordered_map<int32_t, uint32_t> s_values;
             static DWORD s_valuesAt = 0;
             static std::vector<int32_t> s_visited;
+            static bool s_visitedRead = false;
+            if (!s_visitedRead)
+            {
+                s_visitedRead = true;
+                readGivers(s_visited);
+            }
             if ((!s_valuesAt || now - s_valuesAt > 5000) && !AgentSave::worldChanging())
             {
                 s_valuesAt = now ? now : 1;
                 scriptQuestValues(s_values);
             }
             g_giversLeft = 0;
-            std::vector<std::pair<double, const QuestGiver*>> nearby;
+            std::vector<std::pair<double, const QuestGiver*>> nearest;
             for (const QuestGiver& q : kQuestGivers)
             {
                 const auto value = s_values.find(q.number);
@@ -3929,6 +3975,7 @@ namespace
                 if (off < 20.0 || (spent != g_giverTime.end() && spent->second > 1200000))
                 {
                     s_visited.push_back(q.number);
+                    noteGiver(q.number, off < 20.0);
                     if (off < 20.0)
                     {
                         LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
@@ -3952,17 +3999,17 @@ namespace
                 });
                 if (!signThere)
                 {
-                    nearby.emplace_back(off, &q);
+                    nearest.emplace_back(off, &q);
                 }
             }
-            std::sort(nearby.begin(), nearby.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (size_t i = 0; i < nearby.size() && i < 3; ++i)
+            std::sort(nearest.begin(), nearest.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (size_t i = 0; i < nearest.size() && i < 3; ++i)
             {
                 QuestGoal g{GoalKind::Giver};
-                g.x = static_cast<int32_t>((nearby[i].second->x + 0.5) * kTileSize);
-                g.y = static_cast<int32_t>((nearby[i].second->y + 0.5) * kTileSize);
+                g.x = static_cast<int32_t>((nearest[i].second->x + 0.5) * kTileSize);
+                g.y = static_cast<int32_t>((nearest[i].second->y + 0.5) * kTileSize);
                 g.radius = 6.0 * kTileSize;
-                g.number = nearby[i].second->number;
+                g.number = nearest[i].second->number;
                 g_questBook.push_back(g);
             }
             // Quests on offer with no giver known (the script's own list is longer than quest_givers.inc): they hold
