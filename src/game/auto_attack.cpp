@@ -6120,7 +6120,7 @@ namespace
             // The next goal in another region: a town stop first (Gear: the merchant, then the storage chest).
             const int here = sectorRegion(world, static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize));
             const int dest = g_destRegion.load();
-            Gear::prepareFor(goal && here >= 0 && dest >= 0 && dest != here ? dest : -1);
+            Gear::prepareFor(goal && here >= 0 && dest >= 0 && dest != here ? dest : -1, here);
         }
         // The storage chest (the player, 2026-11-16: «consciencia del almacén [...] deberá contener equipamiento con
         // resistencia a la zona donde van»): pieces to keep for other zones, or one to take out for where the hero is

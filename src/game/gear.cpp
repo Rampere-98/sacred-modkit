@@ -3670,11 +3670,13 @@ namespace
     // The town stop before a change of region (the player, 2026-11-16: «la intención es que, antes de cambiar de zona,
     // se prepare antes de ir»): once for each region the next goal is in, the merchant first (what is of no use sold,
     // the healing potions bought up to the stock), then the storage chest (the pieces worth keeping in, the ones for
-    // that region out), then off. Given up after 15 min. Nothing to repair: the game's items do not wear out.
+    // that region out), then off. One stop while the hero stays in the region he is in; given up after 15 min. No
+    // repairing: none the mod knows of in the game (not checked against the exe).
     std::atomic<int> g_prepRegion{-1};
     std::atomic<bool> g_prepShop{false}, g_prepStore{false};
+    std::atomic<DWORD> g_prepShopQuiet{0};    // no merchant in reach: looked for again after a minute
     DWORD g_prepAt = 0, g_prepOffAt = 0, g_tripDoneAt = 0;
-    int g_prepDoneRegion = -1;
+    int g_prepHere = -1, g_prepDoneHere = -1;
     // The storage full at the last put (no piece kept from the merchant meanwhile; the reviewer, S2): 0 not.
     DWORD g_storageFullAt = 0;
     // This visit's moves: what went in does not come out, nor the other way (the reviewer, S1).
@@ -3784,11 +3786,7 @@ namespace
             {
                 return;
             }
-            if (fn<CanUse>(g_canUse)(hero, nullptr, id, 0) ||
-                (levelOf(id) >= 0 && levelOf(id) <= heroLevelOf(hero) + kFutureLevels))
-            {
-                keep.insert(id);
-            }
+            keep.insert(id);    // whatever its level: the sale keeps it too (for the set)
         };
         eachItem(pack, setPiece);
         if (store)
@@ -3870,7 +3868,8 @@ namespace
             if (store && g_zoneRegion.load() >= 0)
             {
                 eachItem(store, [&](uint32_t id, int, int, int) {
-                    take = take || (fn<CanUse>(g_canUse)(hero, nullptr, id, 0) && bestSlot(hero, id, 0.05f) >= 0);
+                    take = take || (!worth(id).weapon && fn<CanUse>(g_canUse)(hero, nullptr, id, 0) &&
+                                    bestSlot(hero, id, 0.05f) >= 0);
                 });
             }
             const bool fresh = g_storageKeep.size() > g_storageKeptBefore;
@@ -3958,7 +3957,8 @@ namespace
             {
                 eachItem(store, [&](uint32_t id, int, int, int) {
                     out = !out && !g_visitIn.count(id) && !g_visitOut.count(id) &&
-                                  fn<CanUse>(g_canUse)(hero, nullptr, id, 0) && bestSlot(hero, id, 0.05f) >= 0
+                                  !worth(id).weapon && fn<CanUse>(g_canUse)(hero, nullptr, id, 0) &&
+                                  bestSlot(hero, id, 0.05f) >= 0
                               ? id : out;
                 });
             }
@@ -4609,7 +4609,9 @@ namespace
 {
     bool prepShopWanted()
     {
-        return g_ready && g_prepShop.load() && g_settings.trips && (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
+        const DWORD quiet = g_prepShopQuiet.load();
+        return g_ready && g_prepShop.load() && g_settings.trips && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
+               (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
     }
 }
 
@@ -4620,9 +4622,12 @@ bool Gear::prepShopOnly()
 
 void Gear::prepShopSkip(const char* why)
 {
-    if (g_prepShop.exchange(false))
+    // Not dropped: the hero goes on towards the goal and the merchant is looked for again in a minute (the stop is
+    // given up only at its 15 min, or once the hero is in the goal's region).
+    if (g_prepShop.load())
     {
-        LOG("Gear: town stop for region {}: no merchant ({})", g_prepRegion.load(), why);
+        g_prepShopQuiet = GetTickCount() + 60000;
+        LOG("Gear: town stop for region {}: no merchant ({}): looked for again in a minute", g_prepRegion.load(), why);
     }
 }
 
@@ -4631,7 +4636,7 @@ bool Gear::prepStorage()
     return g_prepStore.load() && Act::may(Act::Kind::Storage);
 }
 
-void Gear::prepareFor(int region)
+void Gear::prepareFor(int region, int here)
 {
     const DWORD now = GetTickCount();
     const int at = g_prepRegion.load();
@@ -4657,23 +4662,27 @@ void Gear::prepareFor(int region)
         }
         g_prepShop = false;
         g_prepStore = false;
-        g_prepDoneRegion = at;
+        g_prepDoneHere = g_prepHere;
         g_prepRegion = -1;
         g_prepOffAt = 0;
         return;
     }
-    if (!g_ready || region < 0 || region == g_prepDoneRegion)
+    // One stop while the hero stays in this region (a goal going back and forth between two others: no second one).
+    if (!g_ready || region < 0 || here == g_prepDoneHere)
     {
         return;
     }
     g_prepAt = now;
+    g_prepHere = here;
+    g_prepShopQuiet = 0;
     g_prepOffAt = 0;
     // A merchant visited in the last 5 min counts as this stop's.
     g_prepShop = g_settings.trips && (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy)) &&
                  !(g_tripDoneAt && now - g_tripDoneAt < 300000);
     g_prepStore = Act::may(Act::Kind::Storage);
     g_prepRegion = region;
-    LOG("Gear: the next goal is in region {}: a town stop first (merchant {}, storage chest {}), then off", region,
+    LOG("Gear: the next goal is in region {} (the hero in {}): a town stop first (merchant {}, storage chest {}), then off",
+        region, here,
         g_prepShop.load() ? "to visit" : "not (just visited, or Sell and Buy off)",
         g_prepStore.load() ? "to visit" : "not (Storage off)");
 }
