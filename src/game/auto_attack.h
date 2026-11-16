@@ -23,6 +23,10 @@ namespace AutoAttack
     // A storage chest seen within 40 tiles on the hero's layer (the one the agent would go to). Any thread.
     bool storageNear();
 
+    // A quest failed since the slot was last written or loaded, not yet paid for with a load: true once for it (it is
+    // then paid: AgentSave loads instead of saving). One failed again after its load is failed for good: logged, let be.
+    bool freshQuestFailure();
+
     // Hooks it needs; call inside a Patch transaction.
     void install();
 

@@ -3489,7 +3489,7 @@ namespace
     // take, and goes for the nearest objective): every quest under way, every creature offering a quest ("?!") or
     // waiting for a report ("!") the hero can take now, ordered by distance. The agent goes for the nearest it can
     // reach; one it found no way to is left a while (travel's block) and the next one taken.
-    enum class GoalKind { Journal, Offer, Report };
+    enum class GoalKind { Journal, Offer, Report, Giver };
     struct QuestGoal
     {
         GoalKind kind;
@@ -3610,6 +3610,58 @@ namespace
     int32_t g_followedNumber = 0;
     std::vector<int32_t> g_givenUpQuests;
 
+    // Failed quests and the copy's slot (the coordinator, 2026-11-16: no save ever after a quest failed; one failed for
+    // good is a fault of the agent to study): the journal's failed numbers now, those the slot holds (read once after
+    // each load or save) and those paid for with a load.
+    std::vector<int32_t> g_failedNow, g_failedInSlot, g_paidFailures;
+    unsigned g_slotGeneration = ~0u;
+
+    // Quests on offer by a giver the agent has not come to (the script's variable 1, a giver in quest_givers.inc), as
+    // read with the journal: the campaign's last quest waits for them.
+    int g_giversLeft = 0;
+    struct QuestGiver
+    {
+        int32_t number;
+        int x, y, lo, hi;   // tile; the sector's levels
+    };
+    constexpr QuestGiver kQuestGivers[] = {
+#include "game/quest_givers.inc"
+    };
+
+    // The script's variables (Manolito's block BN, docs/Misiones-todas.md): a vector [0xAACF80+0x7550 .. +0x7554) of
+    // 0x24-byte records, char[0x20] name and u32 value at +0x20. A quest's is named by its journal number in decimal:
+    // 0 not available, 1 offered and not taken, bit 1 taken; dungeon quests (15001+) have none.
+    bool scriptQuestValues(std::unordered_map<int32_t, uint32_t>& out)
+    {
+        out.clear();
+        const auto begin = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x7550);
+        const auto end = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x7554);
+        constexpr size_t kRecord = 0x24;
+        if (!begin || end <= begin || (end - begin) % kRecord || (end - begin) / kRecord > 5000)
+        {
+            return false;
+        }
+        for (const uint8_t* r = begin; r < end; r += kRecord)
+        {
+            int32_t n = 0;
+            int i = 0;
+            for (; i < 0x20 && r[i]; ++i)
+            {
+                if (r[i] < '0' || r[i] > '9' || i >= 7)
+                {
+                    n = -1;
+                    break;
+                }
+                n = n * 10 + (r[i] - '0');
+            }
+            if (n > 0 && i < 0x20 && !r[i])
+            {
+                out[n] = *reinterpret_cast<const uint32_t*>(r + 0x20);
+            }
+        }
+        return true;
+    }
+
     bool questTarget(int32_t heroX, int32_t heroY, int32_t& x, int32_t& y, double& radius, uint32_t& who)
     {
         const DWORD now = GetTickCount();
@@ -3695,6 +3747,21 @@ namespace
                 }
             }
             s_failedSeen = failedNumbers;
+            g_failedNow = failedNumbers;
+            // The journal as the slot holds it, once after each load or save: a quest failed in it is failed for good.
+            if (const unsigned generation = AgentSave::generation();
+                generation != g_slotGeneration && !AgentSave::worldChanging())
+            {
+                g_slotGeneration = generation;
+                for (const int32_t number : failedNumbers)
+                {
+                    if (std::find(g_failedInSlot.begin(), g_failedInSlot.end(), number) == g_failedInSlot.end())
+                    {
+                        LOG("AutoAttack: quest {} failed for good: failed in the saved game", number);
+                    }
+                }
+                g_failedInSlot = failedNumbers;
+            }
             if ((done != g_questsDone || failed != g_questsFailed) && (g_questsDone || g_questsFailed || done || failed))
             {
                 LOG("AutoAttack: the journal moved on ({} done, {} failed): anyone may be spoken to again", done, failed);
@@ -3706,7 +3773,8 @@ namespace
                 }
                 // A quest failed: a death (the player, 2026-11-11: «el fracaso cuenta como muerte»). Only one more
                 // than this run read before, not the first read of a run nor right after a load.
-                if (readBefore && failed == g_questsFailed + 1 && !AgentSave::worldChanging())
+                // More than one at a time too: none of them is let into a save.
+                if (readBefore && failed > g_questsFailed && !AgentSave::worldChanging())
                 {
                     for (const int32_t number : newlyFailed)
                     {
@@ -3721,18 +3789,22 @@ namespace
                     // failed 3-7 min after every load, 30 failures and 14 «deaths» in 45 min, its level 11 save set
                     // aside and a new game begun): one that failed before in this run fails again after the load,
                     // and is let be, as a player does not load his game for a quest he cannot make in time.
-                    static std::vector<int32_t> s_paid;
                     bool fresh = false;
                     for (const int32_t number : failedNumbers)
                     {
-                        if (std::find(s_paid.begin(), s_paid.end(), number) == s_paid.end())
+                        if (std::find(g_paidFailures.begin(), g_paidFailures.end(), number) == g_paidFailures.end())
                         {
-                            s_paid.push_back(number);
+                            g_paidFailures.push_back(number);
                             fresh = true;
                         }
                     }
                     if (!fresh && !failedNumbers.empty())
                     {
+                        for (const int32_t number : newlyFailed)
+                        {
+                            LOG("AutoAttack: quest {} failed for good: it failed again after its load{}", number,
+                                number == g_followedNumber ? ", followed" : ", not followed");
+                        }
                         LOG("AutoAttack: a quest failed again after the load ({} failed now): not counted again, left failed",
                             failed);
                     }
@@ -3774,6 +3846,54 @@ namespace
             g.radius = 2.0 * kTileSize;
             g.who = sign.id;
             g_questBook.push_back(g);
+        }
+        // The givers of the quests on offer (the script's variable 1, Manolito's block BN), gone to as a player who
+        // has heard of them: each until the hero comes within 20 tiles of it, where its sign, if the game shows one,
+        // is seen and spoken to; one in a region far above the hero waits (the coordinator, 2026-11-16).
+        {
+            static std::unordered_map<int32_t, uint32_t> s_values;
+            static DWORD s_valuesAt = 0;
+            static std::vector<int32_t> s_visited;
+            if ((!s_valuesAt || now - s_valuesAt > 5000) && !AgentSave::worldChanging())
+            {
+                s_valuesAt = now ? now : 1;
+                scriptQuestValues(s_values);
+            }
+            const int level = HeroProfile::current().level;
+            g_giversLeft = 0;
+            for (const QuestGiver& q : kQuestGivers)
+            {
+                const auto value = s_values.find(q.number);
+                if (value == s_values.end() || value->second != 1 ||
+                    std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end())
+                {
+                    continue;
+                }
+                const int32_t gx = static_cast<int32_t>((q.x + 0.5) * kTileSize);
+                const int32_t gy = static_cast<int32_t>((q.y + 0.5) * kTileSize);
+                if (std::hypot(static_cast<double>(gx - heroX), static_cast<double>(gy - heroY)) < 20.0 * kTileSize)
+                {
+                    s_visited.push_back(q.number);
+                    LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
+                        q.number, q.x, q.y);
+                    continue;
+                }
+                ++g_giversLeft;
+                const bool signThere = std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
+                    return o.kind == GoalKind::Offer &&
+                           std::hypot(static_cast<double>(o.x - gx), static_cast<double>(o.y - gy)) < 20.0 * kTileSize;
+                });
+                if (signThere || (level > 0 && q.lo > level + 2))
+                {
+                    continue;
+                }
+                QuestGoal g{GoalKind::Giver};
+                g.x = gx;
+                g.y = gy;
+                g.radius = 6.0 * kTileSize;
+                g.number = q.number;
+                g_questBook.push_back(g);
+            }
         }
         // C6 (docs/Criterios.md: A3 646 «off to the quest» over 326 goals): the goal followed now counts 30 % nearer, so
         // two goals at much the same way are not flipped between at each step.
@@ -3826,16 +3946,18 @@ namespace
                     const bool sideOpen = std::any_of(g_questBook.begin(), g_questBook.end(), [](const QuestGoal& o) {
                         return o.kind != GoalKind::Journal || !o.main;
                     });
-                    if (sideOpen || !g_signs.empty() || g_questsFailed > 0)
+                    // Not the quests failed for good (the coordinator, 2026-11-16: one left failed in a save held
+                    // it for ever): the givers not yet come to instead.
+                    if (sideOpen || !g_signs.empty() || g_giversLeft > 0)
                     {
                         g.blocked = true;
                         static DWORD s_toldAt = 0;
                         if (!s_toldAt || now - s_toldAt > 600000)
                         {
                             s_toldAt = now;
-                            LOG("AutoAttack: the campaign's last quest is held: quests still open, on offer or failed "
-                                "({} goals in the book, {} signs, {} failed)",
-                                g_questBook.size(), g_signs.size(), g_questsFailed);
+                            LOG("AutoAttack: the campaign's last quest is held: quests still open or on offer "
+                                "({} goals in the book, {} signs, {} givers not come to; {} failed)",
+                                g_questBook.size(), g_signs.size(), g_giversLeft, g_questsFailed);
                         }
                     }
                 }
@@ -3950,7 +4072,8 @@ namespace
                 "at {:.0f} tiles",
                 g_questBook.size(), g_questsDone, g_questsFailed,
                 g.kind == GoalKind::Journal ? (g.main ? "main quest" : "side quest")
-                                            : g.kind == GoalKind::Offer ? "a quest offered" : "a report",
+                                            : g.kind == GoalKind::Offer ? "a quest offered"
+                                            : g.kind == GoalKind::Giver ? "the giver of quest" : "a report",
                 g.number, g.tier, g.minutesLeft, g.distance / kTileSize);
         }
         return true;
@@ -3980,7 +4103,9 @@ namespace
             }
             else
             {
-                line += g.kind == GoalKind::Offer ? "[ofrece misión] alguien con ?!" : "[informar] alguien con !";
+                line += g.kind == GoalKind::Offer   ? "[ofrece misión] alguien con ?!"
+                        : g.kind == GoalKind::Giver ? "[dador] de la misión " + std::to_string(g.number)
+                                                    : "[informar] alguien con !";
             }
             line += " (" + std::to_string(static_cast<int>(g.distance / kTileSize)) + " casillas)";
             if (g.blocked)
@@ -9976,6 +10101,34 @@ void AutoAttack::footFor(unsigned long ms)
 int AutoAttack::destinationRegion()
 {
     return g_destRegion.load();
+}
+
+bool AutoAttack::freshQuestFailure()
+{
+    if (g_slotGeneration != AgentSave::generation())
+    {
+        return false;   // the journal not read since the last load or save
+    }
+    bool fresh = false;
+    for (const int32_t number : g_failedNow)
+    {
+        if (std::find(g_failedInSlot.begin(), g_failedInSlot.end(), number) != g_failedInSlot.end())
+        {
+            continue;
+        }
+        if (std::find(g_paidFailures.begin(), g_paidFailures.end(), number) == g_paidFailures.end())
+        {
+            g_paidFailures.push_back(number);
+            LOG("AutoAttack: quest {} failed since the last save: paid for with a load", number);
+            fresh = true;
+        }
+        else
+        {
+            g_failedInSlot.push_back(number);
+            LOG("AutoAttack: quest {} failed for good: it failed again after its load, the save let be", number);
+        }
+    }
+    return fresh;
 }
 
 bool AutoAttack::storageNear()

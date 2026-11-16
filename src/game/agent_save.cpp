@@ -56,6 +56,7 @@ namespace
     bool g_actionSave = false;
     DWORD s_noHealthSince = 0;
     std::atomic<bool> g_reloadWanted{false};  // the hero's health read 0 since (a death the edge missed, lain in)  // ... and it was a save (the hero stays in the world, so a death still counts)
+    unsigned g_generation = 0;  // each load and each save asked for
     int g_sub = 0;              // the event's kind for the window's thread
     alignas(8) uint8_t g_event[0x40] = {};
     // Kept beside the slot across the copy's restarts (the live verifier, 2026-11-11: an install restarts all 8
@@ -258,8 +259,14 @@ namespace
         g_actionSave = false;
         g_saveWanted = false;
         g_diedSince = false;
+        ++g_generation;
         Inject::call(&sendEvent, nullptr);
     }
+}
+
+unsigned AgentSave::generation()
+{
+    return g_generation;
 }
 
 void AgentSave::questDone()
@@ -738,6 +745,23 @@ void AgentSave::onFrame()
             return;
         }
     }
+    // Never a save with a quest failed since the last one (the coordinator, 2026-11-16: «comprueba que nunca se guarde
+    // después de fallar una»): the save waits and the last one is loaded, as for any failure; one failed again after
+    // its load is let be (AutoAttack logs it «failed for good»). Before a restart the save is only skipped: the
+    // restart loads the last one.
+    if (AutoAttack::freshQuestFailure())
+    {
+        g_saveWanted = false;
+        if (g_restartSave)
+        {
+            g_restartSave = false;
+            LOG("AgentSave: a quest failed since the last save: no save before the restart, it loads the last one");
+            return;
+        }
+        LOG("AgentSave: a quest failed since the last save: not saved, the last one loaded");
+        g_failedQuest = true;
+        return;
+    }
     // The last save kept beside it first (a bad game is not carried on with nothing to go back to).
     const std::wstring backup = g_path.substr(0, g_path.size() - 4) + L".BAK";
     if (slotFileExists())
@@ -751,6 +775,7 @@ void AgentSave::onFrame()
     g_deathsSinceSave = 0;
     writeDeaths();
     g_sub = 2;
+    ++g_generation;
     g_actionAt = now;
     g_actionSave = true;
     Inject::call(&sendEvent, nullptr);
