@@ -532,9 +532,7 @@ namespace
     {
         // The hero's class's own first, in every piece of the equipment (the player, 2026-11-16: option 2 for the
         // weapon slots, then «no te olvides de ningún equipamiento»): one of its own replaces a common one whatever
-        // they score; a common one never replaces one of its own; between two alike, the score as ever. Not for the
-        // weapons (the player, 2026-11-16 22:40: «no obligues al agente a usar las armas exclusivas, pero oblígales a
-        // que tengan las armas en las ranuras»): a weapon by its score alone.
+        // they score; a common one never replaces one of its own; between two alike, the score as ever.
         const bool own = ownClassOnly(hero, id);
         const uint32_t type = typeOf(id);
         void* types = typeMgr();
@@ -562,13 +560,12 @@ namespace
             {
                 continue;
             }
-            const bool handSlot = slot == 12 || slot == 13;
-            const bool currentOwn = !handSlot && current && ownClassOnly(hero, current);
+            const bool currentOwn = current && ownClassOnly(hero, current);
             if (currentOwn && !own)
             {
                 continue;
             }
-            const bool ownOverCommon = !handSlot && own && current && !currentOwn;
+            const bool ownOverCommon = own && current && !currentOwn;
             if (!ownOverCommon && !better(w, current, margin, worn))
             {
                 continue;
@@ -1723,8 +1720,8 @@ namespace
             {
                 return;
             }
-            // By its score alone (the player, 2026-11-16 22:40: the class's own weapons not forced).
-            const float score = worth(id).score;
+            // The hero's class's own first (option 2): above any common one.
+            const float score = worth(id).score + (ownClassOnly(hero, id) ? 1e6f : 0.0f);
             if (!best || score > bestScore)
             {
                 best = id;
@@ -2009,6 +2006,7 @@ namespace
         {
             int slot;
             std::string repeats;
+            bool ownOnly = false;   // filled again only for a weapon of the hero's class alone
         };
         std::vector<Target> targets;
         for (int slot = 0; slot < open; ++slot)
@@ -2042,17 +2040,30 @@ namespace
                                                      sameElement ? elementName(slotElement(wa)) : "")});
             }
         }
+        // A weapon not of the hero's class alone, in a slot not in use: given back for one that is, when there is one
+        // (the player, 2026-11-16, option 2: «exclusiva cuando la tenga y, si no, un arma normal de esa categoría»; in
+        // the agents' copies any slot, the ones it filled before a restart too; in the player's folder only those).
+        for (int slot = 0; slot < open; ++slot)
+        {
+            const uint32_t w = slotWeapon(pack, slot);
+            if (!w || slot == active || ownClassOnly(hero, w) || (!agentCopy() && !g_agentPut.count(w)) ||
+                std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == slot; }))
+            {
+                continue;
+            }
+            targets.push_back({slot, "not a weapon of the hero's class alone", true});
+        }
         if (targets.empty())
         {
             return false;
         }
         void* types = typeMgr();
-        // Of the backpack's weapons with neither a style nor an element another slot has, the one worth most, by its
-        // score alone (the player, 2026-11-16 22:40: «no obligues al agente a usar las armas exclusivas, pero oblígales
-        // a que tengan las armas en las ranuras»). For an empty slot, relaxed step by step so that none stays empty
-        // while the backpack holds a weapon the hero can use: 1 the element may repeat, 2 the style too, 3 any.
-        const auto distinct = [&](const bool styles[5], const bool elements[5], float& bestScore, int relax) {
-            uint32_t best = 0;
+        // Of the backpack's weapons with neither a style nor an element another slot has, the one worth most.
+        // The hero's class's own first: one of them however it scores against a common one; a common one only with
+        // none of its own and the slot not waiting for one (ownOnly).
+        const auto distinct = [&](const bool styles[5], const bool elements[5], float& bestScore, bool ownOnly) {
+            uint32_t best = 0, own = 0;
+            float ownScore = 0.0f;
             eachItem(pack, [&](uint32_t id, int, int, int) {
                 const uint32_t type = typeOf(id);
                 if (const auto t = g_noPutOn.find(id); t != g_noPutOn.end() && GetTickCount() - t->second < 600000)
@@ -2065,50 +2076,51 @@ namespace
                     return;
                 }
                 const int kind = slotElement(id), style = styleOf(id);
-                if (kind < 0 || style < 0 || (relax < 2 && styles[style]) || (relax < 1 && elements[kind]))
+                if (kind < 0 || style < 0 || styles[style] || elements[kind])
                 {
                     return;
                 }
                 const float score = worth(id).score;
-                if (!best || score > bestScore)
+                if (ownClassOnly(hero, id))
+                {
+                    if (!own || score > ownScore)
+                    {
+                        own = id;
+                        ownScore = score;
+                    }
+                }
+                else if (!best || score > bestScore)
                 {
                     best = id;
                     bestScore = score;
                 }
             });
-            return best;
+            if (own)
+            {
+                bestScore = ownScore;
+                return own;
+            }
+            return ownOnly ? 0u : best;
         };
         uint32_t best = 0;
         float bestScore = 0.0f;
         int empty = -1;
         std::string repeats;
         bool takenStyles[5] = {}, takenElements[5] = {};
-        for (int relax = 0; relax <= 2 && !best; ++relax)
+        for (const Target& t : targets)
         {
-            for (const Target& t : targets)
+            bool styles[5] = {}, elements[5] = {};
+            slotsTaken(pack, open, t.slot, styles, elements);
+            float score = 0.0f;
+            if (const uint32_t id = distinct(styles, elements, score, t.ownOnly))
             {
-                if (relax > 0 && !t.repeats.empty())
-                {
-                    continue;   // a slot given back only for a truly distinct weapon
-                }
-                bool styles[5] = {}, elements[5] = {};
-                slotsTaken(pack, open, t.slot, styles, elements);
-                float score = 0.0f;
-                if (const uint32_t id = distinct(styles, elements, score, relax))
-                {
-                    best = id;
-                    bestScore = score;
-                    empty = t.slot;
-                    repeats = t.repeats;
-                    std::copy(styles, styles + 5, takenStyles);
-                    std::copy(elements, elements + 5, takenElements);
-                    if (relax > 0)
-                    {
-                        LOG("Gear: weapon slot {} empty and nothing distinct: {:x} put in all the same ({} repeated)",
-                            t.slot + 1, id, relax == 1 ? "its element" : "its style");
-                    }
-                    break;
-                }
+                best = id;
+                bestScore = score;
+                empty = t.slot;
+                repeats = t.repeats;
+                std::copy(styles, styles + 5, takenStyles);
+                std::copy(elements, elements + 5, takenElements);
+                break;
             }
         }
         if (!best)
