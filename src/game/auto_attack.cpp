@@ -3631,16 +3631,16 @@ namespace
     // The script's variables (Manolito's block BN, docs/Misiones-todas.md): a vector [0xAACF80+0x7550 .. +0x7554) of
     // 0x24-byte records, char[0x20] name and u32 value at +0x20. A quest's is named by its journal number in decimal:
     // 0 not available, 1 offered and not taken, bit 1 taken; dungeon quests (15001+) have none.
-    bool scriptQuestValues(std::unordered_map<int32_t, uint32_t>& out)
+    bool scriptQuestValues(std::unordered_map<int32_t, uint32_t>& values)
     {
-        out.clear();
         const auto begin = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x7550);
         const auto end = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x7554);
         constexpr size_t kRecord = 0x24;
         if (!begin || end <= begin || (end - begin) % kRecord || (end - begin) / kRecord > 5000)
         {
-            return false;
+            return false;   // the last ones read kept
         }
+        std::unordered_map<int32_t, uint32_t> out;
         for (const uint8_t* r = begin; r < end; r += kRecord)
         {
             int32_t n = 0;
@@ -3659,8 +3659,19 @@ namespace
                 out[n] = *reinterpret_cast<const uint32_t*>(r + 0x20);
             }
         }
+        if (out.empty())
+        {
+            return false;
+        }
+        values.swap(out);
         return true;
     }
+
+    // The giver followed now and since when, for the 20 min a giver is gone to at most (its tile may not be reached:
+    // the script gives no layer).
+    int32_t g_giverFollowed = 0;
+    DWORD g_giverFollowedLast = 0;
+    std::unordered_map<int32_t, DWORD> g_giverTime;     // ms followed in all, a giver
 
     bool questTarget(int32_t heroX, int32_t heroY, int32_t& x, int32_t& y, double& radius, uint32_t& who)
     {
@@ -3773,8 +3784,17 @@ namespace
                 }
                 // A quest failed: a death (the player, 2026-11-11: «el fracaso cuenta como muerte»). Only one more
                 // than this run read before, not the first read of a run nor right after a load.
-                // More than one at a time too: none of them is let into a save.
-                if (readBefore && failed > g_questsFailed && !AgentSave::worldChanging())
+                // More than one at a time too: none of them is let into a save. Those the slot holds (read just above
+                // after a load) are not new: a save loaded with two failed in it is no death.
+                std::vector<int32_t> newFails;
+                for (const int32_t number : newlyFailed)
+                {
+                    if (std::find(g_failedInSlot.begin(), g_failedInSlot.end(), number) == g_failedInSlot.end())
+                    {
+                        newFails.push_back(number);
+                    }
+                }
+                if (readBefore && failed > g_questsFailed && !newFails.empty() && !AgentSave::worldChanging())
                 {
                     for (const int32_t number : newlyFailed)
                     {
@@ -3790,7 +3810,7 @@ namespace
                     // aside and a new game begun): one that failed before in this run fails again after the load,
                     // and is let be, as a player does not load his game for a quest he cannot make in time.
                     bool fresh = false;
-                    for (const int32_t number : failedNumbers)
+                    for (const int32_t number : newFails)
                     {
                         if (std::find(g_paidFailures.begin(), g_paidFailures.end(), number) == g_paidFailures.end())
                         {
@@ -3800,7 +3820,7 @@ namespace
                     }
                     if (!fresh && !failedNumbers.empty())
                     {
-                        for (const int32_t number : newlyFailed)
+                        for (const int32_t number : newFails)
                         {
                             LOG("AutoAttack: quest {} failed for good: it failed again after its load{}", number,
                                 number == g_followedNumber ? ", followed" : ", not followed");
@@ -3847,9 +3867,44 @@ namespace
             g.who = sign.id;
             g_questBook.push_back(g);
         }
+        // Quests whose ground is far above a low hero, held until he has the level (a player comes back later): the
+        // Dreamer of Winters (1002, zone 40, docs/QUESTS.md): Valoria goes to the stone circle and dies there, the
+        // quest failed 35-55 s after it was taken, heroes of level 16-24 (the quests' session, 2026-11-16: A2 16:03,
+        // A3 21:02 and 21:38, A4 18:22). Neither followed nor taken: its giver's sign is left too.
+        static constexpr std::pair<int32_t, int> kMinLevel[] = {{1002, 35}};
+        const int heroLv = HeroProfile::current().level;
+        auto tooLow = [heroLv](int32_t number) {
+            for (const auto& [quest, least] : kMinLevel)
+            {
+                if (number == quest && heroLv > 0 && heroLv < least)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // A quest sign at a giver's tile is that giver's quest: numbered so (the level hold and the given-up list
+        // apply to it).
+        for (QuestGoal& o : g_questBook)
+        {
+            if (o.kind != GoalKind::Offer)
+            {
+                continue;
+            }
+            for (const QuestGiver& q : kQuestGivers)
+            {
+                if (std::hypot(o.x / kTileSize - (q.x + 0.5), o.y / kTileSize - (q.y + 0.5)) < 6.0)
+                {
+                    o.number = q.number;
+                    break;
+                }
+            }
+        }
         // The givers of the quests on offer (the script's variable 1, Manolito's block BN), gone to as a player who
         // has heard of them: each until the hero comes within 20 tiles of it, where its sign, if the game shows one,
-        // is seen and spoken to; one in a region far above the hero waits (the coordinator, 2026-11-16).
+        // is seen and spoken to, or until it has been gone to for 20 min (its tile not reached: logged to study). One
+        // in a region far above the hero waits, and holds nothing meanwhile; the three nearest are goals (the
+        // coordinator, 2026-11-16).
         {
             static std::unordered_map<int32_t, uint32_t> s_values;
             static DWORD s_valuesAt = 0;
@@ -3859,8 +3914,8 @@ namespace
                 s_valuesAt = now ? now : 1;
                 scriptQuestValues(s_values);
             }
-            const int level = HeroProfile::current().level;
             g_giversLeft = 0;
+            std::vector<std::pair<double, const QuestGiver*>> near;
             for (const QuestGiver& q : kQuestGivers)
             {
                 const auto value = s_values.find(q.number);
@@ -3869,30 +3924,67 @@ namespace
                 {
                     continue;
                 }
-                const int32_t gx = static_cast<int32_t>((q.x + 0.5) * kTileSize);
-                const int32_t gy = static_cast<int32_t>((q.y + 0.5) * kTileSize);
-                if (std::hypot(static_cast<double>(gx - heroX), static_cast<double>(gy - heroY)) < 20.0 * kTileSize)
+                const double off = std::hypot(heroX / kTileSize - (q.x + 0.5), heroY / kTileSize - (q.y + 0.5));
+                const auto spent = g_giverTime.find(q.number);
+                if (off < 20.0 || (spent != g_giverTime.end() && spent->second > 1200000))
                 {
                     s_visited.push_back(q.number);
-                    LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
-                        q.number, q.x, q.y);
+                    if (off < 20.0)
+                    {
+                        LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
+                            q.number, q.x, q.y);
+                    }
+                    else
+                    {
+                        LOG("AutoAttack: the giver of quest {} at tile {},{} not reached in 20 min: left for this run "
+                            "(to study: its layer or its way)",
+                            q.number, q.x, q.y);
+                    }
+                    continue;
+                }
+                if ((heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number))
+                {
                     continue;
                 }
                 ++g_giversLeft;
                 const bool signThere = std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
-                    return o.kind == GoalKind::Offer &&
-                           std::hypot(static_cast<double>(o.x - gx), static_cast<double>(o.y - gy)) < 20.0 * kTileSize;
+                    return o.kind == GoalKind::Offer && std::hypot(o.x / kTileSize - (q.x + 0.5), o.y / kTileSize - (q.y + 0.5)) < 20.0;
                 });
-                if (signThere || (level > 0 && q.lo > level + 2))
+                if (!signThere)
                 {
-                    continue;
+                    near.emplace_back(off, &q);
                 }
+            }
+            std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (size_t i = 0; i < near.size() && i < 3; ++i)
+            {
                 QuestGoal g{GoalKind::Giver};
-                g.x = gx;
-                g.y = gy;
+                g.x = static_cast<int32_t>((near[i].second->x + 0.5) * kTileSize);
+                g.y = static_cast<int32_t>((near[i].second->y + 0.5) * kTileSize);
                 g.radius = 6.0 * kTileSize;
-                g.number = q.number;
+                g.number = near[i].second->number;
                 g_questBook.push_back(g);
+            }
+            // Quests on offer with no giver known (the script's own list is longer than quest_givers.inc): they hold
+            // nothing, but are named every 30 min to be looked for.
+            static DWORD s_unknownAt = 0;
+            if (!s_values.empty() && (!s_unknownAt || now - s_unknownAt > 1800000))
+            {
+                s_unknownAt = now ? now : 1;
+                std::string list;
+                int count = 0;
+                for (const auto& [number, value] : s_values)
+                {
+                    if (value == 1 && std::none_of(std::begin(kQuestGivers), std::end(kQuestGivers),
+                                                   [number](const QuestGiver& q) { return q.number == number; }))
+                    {
+                        if (++count <= 40)
+                        {
+                            list += (list.empty() ? "" : " ") + std::to_string(number);
+                        }
+                    }
+                }
+                LOG("AutoAttack: {} quests on offer with no giver known (held for nothing; to find): {}", count, list);
             }
         }
         // C6 (docs/Criterios.md: A3 646 «off to the quest» over 326 goals): the goal followed now counts 30 % nearer, so
@@ -3914,11 +4006,6 @@ namespace
                               sectorLevels(world, static_cast<int>(heroX / kTileSize), static_cast<int>(heroY / kTileSize),
                                            hereLo, hereHi) &&
                               hereHi + 3 <= heroLevel;
-        // Quests whose ground is far above a low hero, held until he has the level (a player comes back later): the
-        // Dreamer of Winters (1002, zone 40, docs/QUESTS.md): Valoria goes to the stone circle and dies there, the
-        // quest failed 35-55 s after it was taken, heroes of level 16-24 (the quests' session, 2026-11-16: A2 16:03,
-        // A3 21:02 and 21:38, A4 18:22).
-        static constexpr std::pair<int32_t, int> kMinLevel[] = {{1002, 35}};
         for (QuestGoal& g : g_questBook)
         {
             g.distance = wayLength(heroX, heroY, g.x, g.y);
@@ -4055,6 +4142,15 @@ namespace
         }
         s_followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         g_followedNumber = g.kind == GoalKind::Journal ? g.number : 0;
+        if (g.kind == GoalKind::Giver)
+        {
+            if (g_giverFollowed == g.number && now - g_giverFollowedLast < 30000)
+            {
+                g_giverTime[g.number] += now - g_giverFollowedLast;
+            }
+            g_giverFollowed = g.number;
+            g_giverFollowedLast = now;
+        }
         x = g.x;
         y = g.y;
         radius = g.radius;
