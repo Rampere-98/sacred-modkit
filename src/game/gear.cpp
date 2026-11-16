@@ -3249,8 +3249,14 @@ namespace
         cUI_Window2* window = ui ? ui->window(cUI_Manager::Window::inventory) : nullptr;
         using OnShow = void(__fastcall*)(void* window, void*, uint32_t show);
         const int state = g_sortState.load();
-        if (!window)
+        // A sort left half way (the chain on another branch, Act at No, the stop file) is dropped, never finished
+        // later on a window the player opened (the reviewer, O1).
+        if (!window || (state && now - g_sortStateAt.load() > 8000))
         {
+            if (state)
+            {
+                LOG("Gear: sorting left half way (step {}): dropped", state);
+            }
             g_sortState = 0;
             return false;
         }
@@ -3488,6 +3494,9 @@ namespace
             {
             }
             else if (g_calm && !shop && g_settings.scrolls && g_useItem && readScroll(hero, pack))
+            {
+            }
+            else if (!Act::may(Act::Kind::SortInventory) && (g_sortState = 0, false))
             {
             }
             else if ((g_sortState.load() || (g_calm && !shop)) &&
