@@ -2031,6 +2031,7 @@ namespace
             int slot;
             std::string repeats;
             bool ownOnly = false;   // filled again only for a weapon of the hero's class alone
+            float minScore = 0.0f;  // an upgrade: only for a weapon worth more than this
         };
         // Never one element in two weapon slots (the player, 2026-11-16 23:00: «nunca armas del mismo elemento en
         // ranuras diferentes»): of two, the weaker one not in use back to the backpack, even with nothing for it.
@@ -2105,6 +2106,20 @@ namespace
                 continue;
             }
             targets.push_back({slot, "not a weapon of the hero's class alone", true});
+        }
+        // A better weapon for a slot not in use, of its element or of one no other slot has (the player, 2026-11-16
+        // 23:10: «en caso de que encuentre otra del mismo elemento y mejor, pues hace cambio con la que tiene
+        // equipada … solo quiero que escoja bien»): by the equipping's 5 % margin; one of the class alone gives way
+        // only to another of it.
+        for (int slot = 0; slot < open; ++slot)
+        {
+            const uint32_t w = slotWeapon(pack, slot);
+            if (!w || slot == active || (!agentCopy() && !g_agentPut.count(w)) ||
+                std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == slot; }))
+            {
+                continue;
+            }
+            targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), worth(w).score * 1.05f});
         }
         if (targets.empty())
         {
@@ -2185,7 +2200,8 @@ namespace
                 bool styles[5] = {}, elements[5] = {};
                 slotsTaken(pack, open, t.slot, styles, elements);
                 float score = 0.0f;
-                if (const uint32_t id = distinct(styles, elements, score, t.ownOnly, relax))
+                if (const uint32_t id = distinct(styles, elements, score, t.ownOnly, relax);
+                    id && (t.minScore <= 0.0f || score > t.minScore))
                 {
                     best = id;
                     bestScore = score;
