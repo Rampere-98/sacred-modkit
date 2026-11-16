@@ -39,6 +39,7 @@ namespace Act
         Storage,        // the town's storage chest: pieces for other zones put in and taken out
         SortInventory,  // the inventory window's sort arrow
         Portals,        // the game's portals: stepping on one to join it, picking a destination in its box
+        Drop,           // the worst piece of a full backpack dropped for a better one lying about
         Count
     };
 

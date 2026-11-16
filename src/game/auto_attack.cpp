@@ -610,7 +610,7 @@ namespace
 
     bool acceptLoot(uint32_t id, void*)
     {
-        if (lootBlocked(id, GetTickCount()) || g_lootDone.count(lootKey(id)))
+        if (lootBlocked(id, GetTickCount()) || g_lootDone.count(lootKey(id)) || Gear::wasDropped(id))
         {
             return false;
         }
@@ -671,6 +671,12 @@ namespace
         if (loot == Loot::Item && Gear::packFull() &&
             !(*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(object) + 0x14) & 0x00100000))
         {
+            // A piece worth the trouble lying about: Gear drops the worst it would sell anyway to take it (the player,
+            // 2026-11-16: «se están dejando en el suelo muchos objetos útiles»).
+            if (isEquipment(object))
+            {
+                Gear::wantRoomFor(id);
+            }
             return false;
         }
         return loot == Loot::Item || loot == Loot::Container;

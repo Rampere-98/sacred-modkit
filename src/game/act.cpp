@@ -49,6 +49,7 @@ namespace
         {"Storage", "Almacén (guardar y sacar equipo por zona)"},
         {"SortInventory", "Ordenar inventario (la flecha de la mochila)"},
         {"Portals", "Portales (activarlos y viajar por ellos)"},
+        {"Drop", "Tirar lo peor de la mochila llena para coger algo mejor del suelo"},
     };
 
     std::atomic<unsigned char> g_mode[kCount] = {};

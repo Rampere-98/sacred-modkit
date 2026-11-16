@@ -1387,6 +1387,123 @@ namespace
         return !fn<FindFree>(g_findFree)(pack, nullptr, 2, 2, &free, 0);
     }
 
+    // ---- Room for what lies on the ground ------------------------------------------------------
+    // The backpack full and a better piece on the ground (the player, 2026-11-16: «muchos objetos se están dejando en el
+    // suelo, muchos útiles, por falta de espacio»): the worst piece the hero would sell anyway is dropped, as a player
+    // drags it out of the inventory, and the better one is taken. The game's cEngine::dropItem 0x611620 (Manolito, block
+    // BO): thiscall(engine from 0x60D6C0(-1), id, from = the hero's position +0x18, to = 0 at the feet), the engine's
+    // thread; it takes the item out of the backpack itself. The game does not check quest items, runes or worn pieces.
+    std::atomic<uint32_t> g_roomFor{0};
+    std::atomic<DWORD> g_roomAskedAt{0};
+    std::mutex g_droppedLock;
+    std::unordered_set<uint32_t> g_dropped;
+    DWORD g_dropAt = 0;
+    uint32_t g_dropId = 0;
+
+    void dropOnEngine(void*)
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        cCreature* hero = objects ? objects->hero() : nullptr;
+        if (!hero || !g_dropId)
+        {
+            return;
+        }
+        using GetEngine = void*(__cdecl*)(int);
+        void* engine = reinterpret_cast<GetEngine>(0x60D6C0)(-1);
+        if (!engine)
+        {
+            return;
+        }
+        using DropItem = uint8_t(__fastcall*)(void*, void*, uint32_t, void*, void*);
+        reinterpret_cast<DropItem>(0x611620)(engine, nullptr, g_dropId, reinterpret_cast<uint8_t*>(hero) + 0x18, nullptr);
+    }
+
+    bool dropForRoom(cCreature* hero, uint8_t* pack)
+    {
+        const uint32_t ground = g_roomFor.load();
+        const DWORD now = GetTickCount();
+        if (!ground || now - g_roomAskedAt.load() > 4000 || (g_dropAt && now - g_dropAt < 8000))
+        {
+            return false;
+        }
+        g_roomFor = 0;
+        cObjectManager* objects = cObjectManager::instance();
+        if (!objects || !objects->object(ground))
+        {
+            return false;
+        }
+        {
+            const std::lock_guard lock(g_droppedLock);
+            if (g_dropped.count(ground))
+            {
+                return false;
+            }
+        }
+        int gw = 0, gh = 0;
+        const int groundGrade = gradeOf(ground, true);
+        if (groundGrade < 2 || !sizeOf(ground, gw, gh))
+        {
+            return false;
+        }
+        uint32_t worstId = 0;
+        int worstGrade = 99, worstArea = 0;
+        eachItem(pack, [&](uint32_t id, int, int w, int h) {
+            if ((flagsOf(id) & kQuestItem) || healingType(typeOf(id)) || id == g_socketBase.load() || w * h < gw * gh)
+            {
+                return;
+            }
+            const auto* o = reinterpret_cast<const uint8_t*>(objects->object(id));
+            if (!o || *reinterpret_cast<const uintptr_t*>(o) == kRuneVtable)
+            {
+                return;
+            }
+            if (const auto b = g_bought.find(id); b != g_bought.end() && now - b->second < 600000)
+            {
+                return;
+            }
+            if (worth(id).set >= 0)
+            {
+                return;     // any piece of a set stays
+            }
+            bool fits = false;
+            const bool classOk = fn<CanUse>(g_canUse)(hero, nullptr, id, 1) != 0;
+            const int slot = classOk ? bestSlot(hero, id, 0.05f, nullptr, &fits) : -1;
+            if (classOk && (!fits || slot >= 0))
+            {
+                return;     // potions, gems...; or an upgrade
+            }
+            const int grade = gradeOf(id, true);
+            if (grade < 0 || grade >= groundGrade)
+            {
+                return;
+            }
+            if (grade < worstGrade || (grade == worstGrade && w * h < worstArea))
+            {
+                worstId = id;
+                worstGrade = grade;
+                worstArea = w * h;
+            }
+        });
+        if (!worstId || !Act::allowed(Act::Kind::Drop, "drop the worst piece of the full backpack for a better one lying about"))
+        {
+            return false;
+        }
+        {
+            const std::lock_guard lock(g_droppedLock);
+            if (g_dropped.size() > 512)
+            {
+                g_dropped.clear();
+            }
+            g_dropped.insert(worstId);
+        }
+        g_dropAt = now;
+        g_dropId = worstId;
+        LOG("Gear: backpack full: {:x} (grade {}, {} squares) dropped for {:x} lying about (grade {}, {}x{})", worstId, worstGrade,
+            worstArea, ground, groundGrade, gw, gh);
+        Inject::engineCall(&dropOnEngine, nullptr);
+        return true;
+    }
+
     // Under 15 % of the squares free (the player, 2026-11-16: «muchos objetos se están dejando en el suelo [...] por falta
     // de espacio»): the trip to the merchant goes before the backpack is full, not after the loot is left lying.
     bool packNearlyFull(uint8_t* pack)
@@ -4297,6 +4414,9 @@ namespace
             else if (shop && (g_settings.buy || trip) && buyExtraPotion(hero, pack))
             {
             }
+            else if (g_calm && !shop && !g_storageId.load() && g_roomFor.load() && dropForRoom(hero, pack))
+            {
+            }
             else if ((g_calm || shop) && (g_settings.equip || trip) && equipOne(hero, pack))
             {
             }
@@ -4557,6 +4677,18 @@ void Gear::onFrame(DWORD now, bool calm)
 int Gear::grade(uint32_t id, bool equipment)
 {
     return g_ready ? gradeOf(id, equipment) : -1;
+}
+
+void Gear::wantRoomFor(uint32_t groundId)
+{
+    g_roomFor = groundId;
+    g_roomAskedAt = GetTickCount();
+}
+
+bool Gear::wasDropped(uint32_t id)
+{
+    const std::lock_guard lock(g_droppedLock);
+    return g_dropped.count(id) != 0;
 }
 
 void Gear::noTripFor(unsigned long ms)

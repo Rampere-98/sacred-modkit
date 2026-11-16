@@ -53,6 +53,12 @@ namespace Gear
     int healingLeft();
     // The backpack has no room left (whatever the trips setting): the agent leaves items lying.
     bool packFull();
+    // A better piece lies on the ground (id) and the backpack is full: Gear drops the worst piece it would sell anyway,
+    // if one is worse (never a rune, a quest item, a set piece, a potion or what the hero can still use), and the
+    // piece lying about is taken. The ask is kept 4 s.
+    void wantRoomFor(uint32_t groundId);
+    // Dropped for room: not picked up again.
+    bool wasDropped(uint32_t id);
     // No trip to a merchant for `ms` (the auto attack: no merchant within reach for a backpack only nearly full).
     void noTripFor(unsigned long ms);
     // The agent opened a shop for the trip: sold to, upgrades put on (whatever the menu says), then done.
