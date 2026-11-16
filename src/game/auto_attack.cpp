@@ -4147,6 +4147,9 @@ namespace
                 g.y = static_cast<int32_t>((nearest[i].second->y + 0.5) * kTileSize);
                 g.radius = 6.0 * kTileSize;
                 g.number = nearest[i].second->number;
+                // The quest's own weight (kFirst, kLast): one left for last is not gone for ahead of the rest (A3,
+                // 2026-11-17 00:00: the giver of 602, Boris, 586 tiles off at weight 0).
+                g.tier = questPriority(g.number);
                 g_questBook.push_back(g);
             }
             // Quests on offer with no giver known (the script's own list is longer than quest_givers.inc): they hold
