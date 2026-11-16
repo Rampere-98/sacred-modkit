@@ -5654,6 +5654,31 @@ namespace
         return ways;
     }
 
+    // The tile 3 beyond a way out, toward the other end of the same door on layer 0 (the stuck solver, 2026-11-17, A4: shut in
+    // 8 min in a merchant's house, layer 1, standing again and again on the doorway 3198,2799 whose outside end
+    // 3199,2799 MapMemory had marked on layer 0; the layer flips only one step on, and the guard took «on the way out»
+    // for done, stepped off in a circle's random direction and went on to other houses' doors). False for layer 0 or no
+    // other end marked within 2 tiles.
+    bool beyondWay(int layer, int ex, int ey, int& bx, int& by)
+    {
+        if (layer < 1)
+        {
+            return false;
+        }
+        int bestD = 1 << 30;
+        for (const auto& [ox, oy] : MapMemory::waysOut(0, ex, ey, 2))
+        {
+            const int d = std::max(std::abs(ox - ex), std::abs(oy - ey));
+            if (d >= 1 && d < bestD)
+            {
+                bestD = d;
+                bx = ex + 3 * ((ox > ex) - (ox < ex));
+                by = ey + 3 * ((oy > ey) - (oy < ey));
+            }
+        }
+        return bestD < (1 << 30);
+    }
+
     // Shut in with a goal outside (a farming zone, a shop, the quest): the way out first, the game's own ahead, each
     // tried once in 2 min (A5 2026-11-12: farming sent it 3199 tiles off from inside a cave, between the quest's
     // tries of its way out, so it never got there).
@@ -5680,6 +5705,22 @@ namespace
             }
             if (std::abs(ex - htx) <= 1 && std::abs(ey - hty) <= 1)
             {
+                // On it: through, three tiles beyond toward the door's other end (up to 3 tries), not on to the next way.
+                static std::unordered_map<uint64_t, int> s_through;
+                int tx = 0, ty = 0;
+                if (s_through[wk] < 3 && beyondWay(layer, ex, ey, tx, ty))
+                {
+                    if (now - s_askAt > 2500)
+                    {
+                        s_askAt = now;
+                        ++s_through[wk];
+                        LOG("AutoAttack: on the way out at {},{}: through it, to {},{} (try {})", ex, ey, tx, ty, s_through[wk]);
+                        ClickWalk::walkTo(static_cast<int32_t>((tx + 0.5) * kTileSize), static_cast<int32_t>((ty + 0.5) * kTileSize),
+                                          false);
+                    }
+                    return true;
+                }
+                s_through.erase(wk);
                 s_tried[wk] = now;
                 continue;
             }
@@ -6315,8 +6356,17 @@ namespace
                 best = std::fmod(best, 10000.0);
                 if (best <= 1.5)
                 {
-                    // On it: a step off, the next stage walks back onto it.
+                    // On it: through it when the door's other end is marked (the layer flips one step on); else a step off,
+                    // the next stage walks back onto it.
                     const double a = now * 0.001;
+                    int tx = 0, ty = 0;
+                    if (beyondWay(layer, bx, by, tx, ty))
+                    {
+                        ClickWalk::walkTo(static_cast<int32_t>((tx + 0.5) * kTileSize), static_cast<int32_t>((ty + 0.5) * kTileSize),
+                                          false);
+                        LOG("AutoAttack: stuck guard: shut in, on the way out at {},{}: through it, to {},{}", bx, by, tx, ty);
+                        return true;
+                    }
                     ClickWalk::walkTo(static_cast<int32_t>(self->x + std::cos(a) * 3 * kTileSize),
                                       static_cast<int32_t>(self->y + std::sin(a) * 3 * kTileSize), false);
                     LOG("AutoAttack: stuck guard: shut in, on the way out at {},{}: a step off to step on again", bx, by);
