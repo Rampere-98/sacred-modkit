@@ -3979,8 +3979,10 @@ namespace
                 LOG("AutoAttack: quest order: {} skipped: {}", n, why);
             }
         }
-        if (g_orderNext != nextBefore)
+        static DWORD s_nextTold = 0;
+        if (g_orderNext != nextBefore && GetTickCount() - s_nextTold > 60000)   // at most a line a minute (review Q2)
         {
+            s_nextTold = GetTickCount();
             LOG("AutoAttack: quest order: next {} (level {}), place {}/{}", g_orderNext,
                 g_orderPos ? kQuestOrder[g_orderPos - 1].level : 0, g_orderPos, kOrderCount);
         }
@@ -4021,7 +4023,9 @@ namespace
             s_last = now;
             return;
         }
-        if (now - s_last < 30000)
+        // At the goal's place (killing there, waiting for something): not stalled, whatever the distance does
+        // (review Q3).
+        if (now - s_last < 30000 && p.distance > 15.0 * kTileSize)
         {
             s_spent += now - s_last;
         }
@@ -4443,6 +4447,7 @@ namespace
                 g.number > 0 && skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
             {
                 g.rank = kOrderCount + 1;
+                g.tier = std::min(g.tier, 0);   // a kFirst one skipped too, or it stays first (review Q1)
             }
             g.blocked = goalBlocked(g.x, g.y, now) ||
                         (g.number > 0 &&
