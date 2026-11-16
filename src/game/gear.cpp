@@ -531,7 +531,8 @@ namespace
     int slotElement(uint32_t id);
     uint32_t slotWeapon(const uint8_t* pack, int slot);
 
-    int bestSlot(cCreature* hero, uint32_t id, float margin, uint32_t* replaced = nullptr, bool* fits = nullptr)
+    int bestSlot(cCreature* hero, uint32_t id, float margin, uint32_t* replaced = nullptr, bool* fits = nullptr,
+                 bool ownFirst = true)
     {
         // The hero's class's own first, in every piece of the equipment (the player, 2026-11-16: option 2 for the
         // weapon slots, then «no te olvides de ningún equipamiento»): one of its own replaces a common one whatever
@@ -571,7 +572,7 @@ namespace
             {
                 continue;
             }
-            const bool ownOverCommon = !handSlot && own && current && !currentOwn;
+            const bool ownOverCommon = ownFirst && !handSlot && own && current && !currentOwn;
             if (!ownOverCommon && !better(w, current, margin, worn))
             {
                 continue;
@@ -761,6 +762,66 @@ namespace
     int g_sellSeen = 0, g_sellPotions = 0;
     bool healingType(uint32_t type);    // defined below
 
+    // The level an item asks for: u8 info+0x14 (info = GetInfo(item, -1), object+0x118; canUseItem 0x54ABE0 checks
+    // info+0x14..+0x18 against the hero's level and attributes, AGENT_ADDRESSES «Gladiador y arco»). Read live in A1,
+    // 2026-11-16: everything the level-20 Seraphim wears is at 16 or less, her backpack holds pieces up to 17 (I: the
+    // level byte; +0x19 runs 4-6 above it). -1: not known.
+    int levelOf(uint32_t id)
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        cObject* item = objects && id ? objects->object(id) : nullptr;
+        const uint8_t* info = item && g_getInfo ? fn<GetInfo>(g_getInfo)(item, nullptr, -1) : nullptr;
+        return info ? info[0x14] : -1;
+    }
+
+    int heroLevelOf(const cCreature* hero)
+    {
+        return *reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(hero) + kStats + 0x56);
+    }
+
+    constexpr int kFutureLevels = 3;    // a future upgrade: its level at most this far above the hero's
+
+    // The future upgrades worth keeping: of the class (canUse mode 1) but not wearable now (mode 0), their level
+    // within kFutureLevels of the hero's, better than what is worn by the score alone (the class's own first is for
+    // pieces wearable now), and only the best of them for each body slot.
+    std::unordered_set<uint32_t> futureKeep(cCreature* hero, uint8_t* pack)
+    {
+        std::unordered_map<int, std::pair<uint32_t, float>> best;
+        const int level = heroLevelOf(hero);
+        eachItem(pack, [&](uint32_t id, int, int, int) {
+            if ((flagsOf(id) & kQuestItem) || !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) ||
+                fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
+            {
+                return;
+            }
+            const int need = levelOf(id);
+            if (need < 0 || need > level + kFutureLevels)
+            {
+                return;
+            }
+            bool fits = false;
+            const int slot = bestSlot(hero, id, 0.05f, nullptr, &fits, false);
+            if (slot < 0)
+            {
+                return;
+            }
+            const float score = worth(id).primary;
+            auto [at, fresh] = best.try_emplace(slot, id, score);
+            if (!fresh && score > at->second.second)
+            {
+                at->second = {id, score};
+            }
+        });
+        std::unordered_set<uint32_t> keep;
+        for (const auto& [slot, piece] : best)
+        {
+            keep.insert(piece.first);
+        }
+        return keep;
+    }
+
+    int g_keptNow = 0, g_keptFuture = 0;
+
     bool sellOne(cCreature* hero, uint8_t* pack)
     {
         void* inv = inventory();
@@ -769,6 +830,8 @@ namespace
         std::fill(std::begin(g_sellWhy), std::end(g_sellWhy), 0);
         g_sellSeen = 0;
         g_sellPotions = 0;
+        g_keptNow = g_keptFuture = 0;
+        const std::unordered_set<uint32_t> future = futureKeep(hero, pack);
         // With gold to spare (over 500 000: the laboratory's endless gold) the healing potions beyond twice the stock are
         // sold too. The runes are never sold (the player, 2026-11-09): the combo master takes them.
         const bool rich = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + kGold) >= 500000;
@@ -816,10 +879,21 @@ namespace
             const bool classOk = fn<CanUse>(g_canUse)(hero, nullptr, id, 1) != 0;
             // An upgrade by the same 5 % margin the equipping asks for: one better by less is never put on, and kept
             // it only filled the backpack (the player, 2026-11-12: «A2 nunca vacía su inventario»: the Gladiator, who
-            // can use nearly all, had sold nothing in two days).
+            // can use nearly all, had sold nothing in two days). And only one the hero can wear now (canUse mode 0,
+            // what the equipping asks), or one of the future upgrades kept (the best per body slot, near his level):
+            // a piece of the class he will never wear is sold as any other (the player, 2026-11-16, the Seraphim).
+            const bool wearable = classOk && fn<CanUse>(g_canUse)(hero, nullptr, id, 0) != 0;
             const int slot = classOk ? bestSlot(hero, id, 0.05f, nullptr, &fits) : -1;
-            if (classOk && (!fits || slot >= 0))
+            if (classOk && fits && slot >= 0 && !wearable && !future.count(id))
             {
+                // of the class, not wearable now nor a future upgrade kept: on to the sale
+            }
+            else if (classOk && (!fits || slot >= 0))
+            {
+                if (fits)
+                {
+                    ++(wearable ? g_keptNow : g_keptFuture);
+                }
                 // Potions, runes, gems...; or an upgrade (perhaps once the hero is stronger). Rich: the healing potions
                 // beyond twice the stock go.
                 const bool potion = healingType(typeOf(id));
@@ -3603,6 +3677,12 @@ namespace
             {
                 return;
             }
+            // Not one the hero will never wear (the player, 2026-11-16): wearable now, or its level near his.
+            if (!fn<CanUse>(g_canUse)(hero, nullptr, id, 0) &&
+                (levelOf(id) < 0 || levelOf(id) > heroLevelOf(hero) + kFutureLevels))
+            {
+                return;
+            }
             const int slot = bodySlotOf(id);
             if (slot < 0)
             {
@@ -4162,7 +4242,10 @@ namespace
             g_idleWorks = acted ? 0 : g_idleWorks + 1;
             if (trip && g_idleWorks >= 2)
             {
-                LOG("Gear: merchant trip done (backpack {})", g_full ? "still full: nothing more to sell" : "has room");
+                LOG("Gear: merchant trip done (backpack {}); kept {}: {} upgrades now, {} future (best per slot), {} "
+                    "sets, {} storage", g_full ? "still full: nothing more to sell" : "has room",
+                    g_keptNow + g_keptFuture + g_sellWhy[7] + g_sellWhy[12], g_keptNow, g_keptFuture, g_sellWhy[7],
+                    g_sellWhy[12]);
                 if (g_full)
                 {
                     LOG("Gear: not sold, of {} things: quest {}, taken off {}, for the smith {}, runes {}, upgrades {}, healing "
