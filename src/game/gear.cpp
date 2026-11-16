@@ -3208,6 +3208,151 @@ namespace
 
     std::atomic<bool> g_slotsDue{false};    // work() found nothing else to do: the slots, on the game's thread
 
+    // Sorting the backpack as the player does (the owner, 2026-11-16: «¿consigues hacer que el agente organice el
+    // inventario?»): the inventory window's sort arrow, cInventoryEntry::autoSortItems 0x5DB6B0 thiscall(the hero's
+    // entry, u16 mode) ret 4 (Manolito, block BJ: what cUI_Inventory3::receiveEvent calls on the arrow's click with
+    // the window shown; it puts everything back as it was if something does not fit). Only with the inventory window
+    // open: opened with the game's key (its own onShow(1) if the key does nothing, a copy without the focus), and
+    // closed again if the agent opened it. After a merchant trip, or with the backpack in pieces (no room for a 2x4
+    // piece with room enough for two); once in 10 minutes at most. Never the storage chest (no arrow there).
+    // The key goes as the agent's other keys (Inject: the game's window messages, never the player's focus or mouse);
+    // 0x7325C0 is the windows' own close (AGENT_ADDRESSES: the popups and the map close with it, flag 1).
+    std::atomic<bool> g_sortWanted{false};
+    std::atomic<int> g_sortState{0};    // 0 idle, 1 opening, 2 sort, 3 closing
+    std::atomic<DWORD> g_sortStateAt{0};
+    DWORD g_sortLast = 0;
+    bool g_sortOpened = false;
+    int g_sortTries = 0;
+
+    struct PackRoom
+    {
+        int freeCells = 0;
+        bool fits2x4 = false;
+    };
+
+    PackRoom packRoom(uint8_t* pack)
+    {
+        PackRoom room;
+        const int w = *reinterpret_cast<uint16_t*>(pack + 0x115C), h = *reinterpret_cast<uint16_t*>(pack + 0x115E);
+        int used = 0;
+        eachItem(pack, [&](uint32_t, int, int iw, int ih) { used += iw * ih; });
+        room.freeCells = w * h - used;
+        uint16_t cell = 0;
+        room.fits2x4 = fn<FindFree>(g_findFree)(pack, nullptr, 2, 4, &cell, 0) != 0;
+        return room;
+    }
+
+    bool sortStep(cCreature* hero, uint8_t* pack)
+    {
+        const DWORD now = GetTickCount();
+        cUI_Manager* ui = cUI_Manager::instance();
+        cUI_Window2* window = ui ? ui->window(cUI_Manager::Window::inventory) : nullptr;
+        using OnShow = void(__fastcall*)(void* window, void*, uint32_t show);
+        const int state = g_sortState.load();
+        if (!window)
+        {
+            g_sortState = 0;
+            return false;
+        }
+        if (state == 0)
+        {
+            if (g_sortLast && now - g_sortLast < 600000)
+            {
+                return false;
+            }
+            const PackRoom room = packRoom(pack);
+            const bool broken = !room.fits2x4 && room.freeCells >= 16;
+            if (!g_sortWanted.load() && !broken)
+            {
+                return false;
+            }
+            if (!Act::allowed(Act::Kind::SortInventory, broken ? "sort the backpack: room enough but in pieces"
+                                                                 : "sort the backpack after the merchant"))
+            {
+                return false;
+            }
+            g_sortWanted = false;
+            g_sortLast = now;
+            g_sortTries = 0;
+            g_sortOpened = !window->visible();
+            if (g_sortOpened)
+            {
+                LOG("Gear: sorting the backpack ({}): the inventory opened with its key",
+                    broken ? "in pieces" : "after the merchant");
+                Inject::key('I', true);
+                Inject::key('I', false);
+                g_sortState = 1;
+                g_sortStateAt = now;
+                return true;
+            }
+            g_sortState = 2;
+            g_sortStateAt = now;
+        }
+        if (g_sortState.load() == 1)
+        {
+            if (!window->visible())
+            {
+                if (now - g_sortStateAt.load() > 1500 && ++g_sortTries == 1)
+                {
+                    // The key does nothing in a copy without the focus: the window's own show, as its close (vt 9).
+                    const auto* vt = *reinterpret_cast<const uintptr_t* const*>(window);
+                    reinterpret_cast<OnShow>(vt[9])(window, nullptr, 1);
+                    LOG("Gear: sorting: the key did not open the inventory: its own show");
+                }
+                else if (now - g_sortStateAt.load() > 4000)
+                {
+                    LOG("Gear: sorting: the inventory would not open: left for 10 min");
+                    g_sortState = 0;
+                }
+                return true;
+            }
+            g_sortState = 2;
+        }
+        if (g_sortState.load() == 2)
+        {
+            const PackRoom before = packRoom(pack);
+            const uint16_t mode =
+                static_cast<uint16_t>((*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(window) + 0x168) >> 4) & 1);
+            using AutoSort = void(__fastcall*)(uint8_t* entry, void*, uint16_t mode);
+            reinterpret_cast<AutoSort>(0x5DB6B0)(pack, nullptr, mode);
+            const PackRoom after = packRoom(pack);
+            LOG("Gear: backpack sorted with the inventory's arrow (mode {}: {}): {} free cells, a 2x4 piece fits {} -> {}",
+                mode, mode ? "by rows" : "by columns", before.freeCells, before.fits2x4 ? "yes" : "no",
+                after.fits2x4 ? "yes" : "no");
+            (void)hero;
+            g_sortState = g_sortOpened ? 3 : 0;
+            g_sortStateAt = now;
+            g_sortTries = 0;
+            return true;
+        }
+        // Closing what the agent opened, as the player: its close (vt 9 onShow(0)), checked; the windows' own close
+        // (0x7325C0) after three.
+        if (!window->visible())
+        {
+            LOG("Gear: sorting: the inventory closed again");
+            g_sortState = 0;
+            return false;
+        }
+        if (now - g_sortStateAt.load() < 500)
+        {
+            return true;
+        }
+        g_sortStateAt = now;
+        if (++g_sortTries <= 3)
+        {
+            const auto* vt = *reinterpret_cast<const uintptr_t* const*>(window);
+            reinterpret_cast<OnShow>(vt[9])(window, nullptr, 0);
+        }
+        else
+        {
+            using ClearFlags = void(__fastcall*)(void* window, void*, uint32_t bits);
+            reinterpret_cast<ClearFlags>(0x7325C0)(window, nullptr, 1);
+            LOG("Gear: sorting: the inventory still open after 3 closes: the windows' own close");
+            g_sortState = 0;
+        }
+        return true;
+    }
+
     void work(void*)
     {
         // Whatever way work() leaves (a return, an exception from a call into the game), the next one may start.
@@ -3339,6 +3484,10 @@ namespace
             else if (g_calm && !shop && g_settings.scrolls && g_useItem && readScroll(hero, pack))
             {
             }
+            else if ((g_sortState.load() || (g_calm && !shop)) &&
+                     Act::may(Act::Kind::SortInventory) && sortStep(hero, pack))
+            {
+            }
             else
             {
                 acted = false;
@@ -3362,6 +3511,7 @@ namespace
                         g_sellWhy[6], g_sellWhy[7], g_sellWhy[8], g_sellWhy[9], g_sellWhy[10], g_sellWhy[11]);
                 }
                 g_tripDone = true;
+                g_sortWanted = true;
                 // Still full: this merchant does not deal in what the hero carries (a weapon shop and a backpack of
                 // armour; the player, 2026-11-14: «tienen acúmulo de mierda»). Told to the agent, who leaves this
                 // merchant for half an hour and goes to another at once; before, no trip at all for 10 minutes.
@@ -3711,6 +3861,11 @@ bool Gear::shopOpen()
 {
     void* inv = g_ready ? inventory() : nullptr;
     return inv && *reinterpret_cast<const uint32_t*>(static_cast<uint8_t*>(inv) + kTrade) != 0;
+}
+
+bool Gear::sorting()
+{
+    return g_sortState.load() != 0 && GetTickCount() - g_sortStateAt.load() < 5000;
 }
 
 bool Gear::craftsmanOpen()
