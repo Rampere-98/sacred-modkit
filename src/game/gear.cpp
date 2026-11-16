@@ -2080,7 +2080,7 @@ namespace
                     return;
                 }
                 const int kind = slotElement(id), style = styleOf(id);
-                if (kind < 0 || style < 0 || (relax < 1 && styles[style]) || (relax < 2 && elements[kind]))
+                if (kind < 0 || style < 0 || (relax < 1 && styles[style]) || elements[kind])
                 {
                     return;
                 }
@@ -2113,10 +2113,12 @@ namespace
         bool takenStyles[5] = {}, takenElements[5] = {};
         // An empty slot never left so while the backpack holds a weapon the hero can use (the player, 2026-11-16 22:40:
         // «oblígales a que tengan las armas en las ranuras»): with nothing distinct, one whose style repeats another
-        // slot's; only then one whose element does, given back as soon as the backpack holds one of an element no
-        // other slot has (the player, 22:55: «obligación también los elementos»). A slot given back for a repeat only
-        // for a distinct one; a common weapon for any of the class's own.
-        for (int relax = 0; relax <= 2 && !best; ++relax)
+        // slot's. Never an element twice (the player, 22:55-23:00: «obligación también los elementos»; «en caso de
+        // tener 2 físicas y las ranuras están vacías, solo se equipa la mejor de las 2 en una ranura … en caso de
+        // tener una de fuego y otra física, la ranura vacía sí podría completarse»): with no weapon of an element no
+        // other slot has, the slot stays empty. A slot given back for a repeat only for a distinct one; a common
+        // weapon for any of the class's own.
+        for (int relax = 0; relax <= 1 && !best; ++relax)
         {
             for (const Target& t : targets)
             {
@@ -2137,8 +2139,8 @@ namespace
                     std::copy(elements, elements + 5, takenElements);
                     if (relax > 0)
                     {
-                        LOG("Gear: weapon slot {} empty and nothing distinct: {:x} put in all the same ({} repeated)",
-                            t.slot + 1, id, relax == 1 ? "its style" : "its element, until one of an element no other slot has");
+                        LOG("Gear: weapon slot {} empty and nothing distinct: {:x} put in all the same ({} repeated, its element not)",
+                            t.slot + 1, id, "its style");
                     }
                     break;
                 }
