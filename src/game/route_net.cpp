@@ -398,6 +398,24 @@ namespace
     }
 }
 
+bool RouteNet::tripPasses(int layer, int toX, int toY, bool (*hit)(int tx, int ty))
+{
+    const std::lock_guard lock(g_lock);
+    const Kept& k = g_kept;
+    if (!k.ok || k.layer != layer || cheb(k.toX, k.toY, toX, toY) > 4)
+    {
+        return false;
+    }
+    for (size_t i = std::min(k.progress, k.points.size()); i < k.points.size(); i += 4)
+    {
+        if (hit(k.points[i].first, k.points[i].second))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 float RouteNet::tilesLeft(int layer, int heroX, int heroY, int toX, int toY)
 {
     const std::lock_guard lock(g_lock);

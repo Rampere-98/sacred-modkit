@@ -26,4 +26,7 @@ namespace RouteNet
     // hero's every step): -1 when the net has no trip for that goal or the hero is over 40 tiles off it. The auto attack's measure of progress along
     // a detour that is, in a straight line, first away from the goal (a river's bend: 1276 tiles for 385 as the crow flies).
     float tilesLeft(int layer, int heroX, int heroY, int toX, int toY);
+    // Whether any point of the trip kept for (toX, toY) on `layer`, from the one the hero is nearest on, satisfies `hit`
+    // (tiles). False when the net has no trip kept for that goal.
+    bool tripPasses(int layer, int toX, int toY, bool (*hit)(int tx, int ty));
 }

@@ -2771,6 +2771,104 @@ namespace
         return false;
     }
 
+    // ---- The way to a merchant for a hero too weak to cross a pack (the stuck solver, 2026-11-16, A7: a level 2 Dwarf with
+    // one potion and 1 000 108 gold died 11 times in 35 min in two corridors on the way to the merchants, the same goblin
+    // pack each life; the load put it back at the start of the same walk) ------------------------------------------------
+    struct SeenFoe
+    {
+        DWORD at;
+    };
+    std::unordered_map<uint32_t, SeenFoe> g_foesSeen;       // enemies seen in the last 60 s
+    struct DangerSpot
+    {
+        int tx, ty;
+        DWORD at;
+    };
+    std::vector<DangerSpot> g_dangerSpots;                  // where a group of three or more was met on a fragile trip
+
+    // Level 3 or under with one healing potion or none (the count known): the walk to a merchant is not to be fought through.
+    bool fragileHero()
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        const cCreature* hero = objects ? objects->hero() : nullptr;
+        return hero && Gear::healingLeft() >= 0 && Gear::healingLeft() <= 1 &&
+               *reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x3FE) <= 3;
+    }
+
+    // How many enemies seen in the last 60 s, alive, are within `tiles` of the hero; their middle (world units) in cx, cy.
+    int groupWithin(const cCreature* self, double tiles, DWORD now, double& cx, double& cy)
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        int n = 0;
+        cx = cy = 0.0;
+        std::erase_if(g_foesSeen, [now](const auto& kv) { return now - kv.second.at > 60000; });
+        for (const auto& [id, seen] : g_foesSeen)
+        {
+            const cCreature* c = objects ? objects->creature(id) : nullptr;
+            if (c && c->health > 0 &&
+                std::hypot(static_cast<double>(c->x - self->x), static_cast<double>(c->y - self->y)) < tiles * kTileSize)
+            {
+                ++n;
+                cx += c->x;
+                cy += c->y;
+            }
+        }
+        if (n)
+        {
+            cx /= n;
+            cy /= n;
+        }
+        return n;
+    }
+
+    // Within 30 tiles of a group met on a fragile trip in the last 10 min.
+    bool nearDangerGroup(int tx, int ty)
+    {
+        const DWORD now = GetTickCount();
+        std::erase_if(g_dangerSpots, [now](const DangerSpot& d) { return now - d.at > 600000; });
+        for (const DangerSpot& d : g_dangerSpots)
+        {
+            if ((tx - d.tx) * (tx - d.tx) + (ty - d.ty) * (ty - d.ty) < 900)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool deadlyTile(int tx, int ty)
+    {
+        return AgentSave::nearDeathSpot(tx, ty) || nearDangerGroup(tx, ty);
+    }
+
+    // Whether the way from the hero to (toX, toY) (world units) crosses a place where the hero died lately or met a group:
+    // the route net's trip when it has one for that goal, else the straight line, a point every 8 tiles; not within 25
+    // tiles of where the hero stands (a load at the place itself would shut every way).
+    bool deathOnTheWay(const cCreature* self, int32_t toX, int32_t toY, int layer)
+    {
+        const int hx = static_cast<int>(self->x / kTileSize), hy = static_cast<int>(self->y / kTileSize);
+        static int s_hx, s_hy;
+        s_hx = hx;
+        s_hy = hy;
+        if (RouteNet::tripPasses(layer, static_cast<int>(toX / kTileSize), static_cast<int>(toY / kTileSize), [](int tx, int ty) {
+                return (tx - s_hx) * (tx - s_hx) + (ty - s_hy) * (ty - s_hy) > 625 && deadlyTile(tx, ty);
+            }))
+        {
+            return true;
+        }
+        const double dx = static_cast<double>(toX - self->x) / kTileSize, dy = static_cast<double>(toY - self->y) / kTileSize;
+        const double length = std::hypot(dx, dy);
+        for (double t = 8.0; t < length; t += 8.0)
+        {
+            const int tx = hx + static_cast<int>(dx * t / length), ty = hy + static_cast<int>(dy * t / length);
+            if ((tx - hx) * (tx - hx) + (ty - hy) * (ty - hy) > 625 && deadlyTile(tx, ty))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool decide(DWORD now, Choice& out)
     {
         float hx, hy;
@@ -3045,6 +3143,10 @@ namespace
             if (foeObject)
             {
                 world[f.id] = {foeObject->x, foeObject->y};
+                if (f.health > 0)
+                {
+                    g_foesSeen[f.id] = {now};
+                }
             }
             const uint32_t aim = foeObject ? aimOf(objects, foeObject) : 0;
             // Striking or aiming at the hero, or with aggro on it (coming, a blow or two off): a threat either way.
@@ -4528,7 +4630,7 @@ namespace
     // verifier, 2026-11-11: A3 died 8 times running in the zone at 3223,2664 «levels 1-4», loaded and went back to it).
     bool nearDeathSpot(int tx, int ty)
     {
-        return AgentSave::nearDeathSpot(tx, ty);
+        return AgentSave::nearDeathSpot(tx, ty) || nearDangerGroup(tx, ty);
     }
 
     void chooseFarm(const uint8_t* world, int heroLevel, int32_t heroX, int32_t heroY)
@@ -6507,6 +6609,35 @@ namespace
                 }
                 g_exitUntil = 0;
             }
+            // A hero too weak to fight its way (level 3 or under, one potion or none): a group of three or more within 25 tiles
+            // is not walked into, and a merchant over 200 tiles off by a way that crosses where it died lately or met a group
+            // is not gone to (the stuck solver, 2026-11-16, A7): the experience first, on single enemies, and the trip again
+            // after 5 min; the trip and the places are told once.
+            const bool fragile = fragileHero();
+            bool shutByDeath = false;
+            if (fragile)
+            {
+                double gx = 0.0, gy = 0.0;
+                if (groupWithin(self, 25.0, now, gx, gy) >= 3)
+                {
+                    g_dangerSpots.push_back({static_cast<int>(gx / kTileSize), static_cast<int>(gy / kTileSize), now});
+                    LOG("AutoAttack: three or more enemies within 25 tiles on the way to a merchant ({} potions, hero too weak): "
+                        "not walked into, around {},{} shunned 10 min; no trip for 5 min", Gear::healingLeft(),
+                        static_cast<int>(gx / kTileSize), static_cast<int>(gy / kTileSize));
+                    Gear::noTripFor(300000);
+                    g_shopId = 0;
+                    g_roamAt = 0;
+                    return;
+                }
+            }
+            auto deadlyWay = [&](int32_t mx, int32_t my, double walk) {
+                if (fragile && walk > 200.0 * kTileSize && deathOnTheWay(self, mx, my, layer))
+                {
+                    shutByDeath = true;
+                    return true;
+                }
+                return false;
+            };
             const Merchant* best = nullptr;
             double bestDistance = 0.0, bestRank = 0.0;
             // The merchant being gone to, kept: the game's list holds only the creatures it has loaded about the hero, and
@@ -6537,7 +6668,7 @@ namespace
                 // tiles off through higher grounds and got stuck on the way): 150 tiles at most.
                 if ((m.layer != layer && d > 30.0 * kTileSize) || d > shopReach ||
                     (failed != g_shopFailedAt.end() && now - failed->second < 300000) ||
-                    (g_shopUselessAt.count(m.id) && now - g_shopUselessAt[m.id] < 1800000))
+                    (g_shopUselessAt.count(m.id) && now - g_shopUselessAt[m.id] < 1800000) || deadlyWay(m.x, m.y, d))
                 {
                     continue;
                 }
@@ -6566,7 +6697,7 @@ namespace
                     !(g_shopUselessAt.count(g_shopId) && now - g_shopUselessAt[g_shopId] < 1800000))
                 {
                     const double walkMine = wayLength(self->x, self->y, s_sticky.x, s_sticky.y);
-                    if (!(s_sticky.layer != layer && walkMine > 30.0 * kTileSize) &&
+                    if (!(s_sticky.layer != layer && walkMine > 30.0 * kTileSize) && !deadlyWay(s_sticky.x, s_sticky.y, walkMine) &&
                         (!best || best->id == g_shopId || bestDistance > walkMine * 0.4))
                     {
                         best = &s_sticky;
@@ -6659,7 +6790,8 @@ namespace
                     const double way = wayLength(self->x, self->y, static_cast<int32_t>((mx + 0.5) * kTileSize),
                                                  static_cast<int32_t>((my + 0.5) * kTileSize));
                     const double rank = key == s_remKey ? way * 0.75 : way;
-                    if (way <= 900.0 * kTileSize && (!remFound || rank < remRank))
+                    if (way <= 900.0 * kTileSize && (!remFound || rank < remRank) &&
+                        !deadlyWay(static_cast<int32_t>((mx + 0.5) * kTileSize), static_cast<int32_t>((my + 0.5) * kTileSize), way))
                     {
                         remFound = true;
                         remWay = way;
@@ -6712,6 +6844,16 @@ namespace
                         return;
                     }
                 }
+            }
+            // Every way crossed a place of death or a group: the experience first, the trip again after 5 min.
+            if (shutByDeath)
+            {
+                LOG("AutoAttack: every way to a merchant crosses where the hero died lately or met a group ({} potions, hero "
+                    "too weak): no trip for 5 min, the experience first", Gear::healingLeft());
+                Gear::noTripFor(300000);
+                g_shopId = 0;
+                g_roamAt = 0;
+                return;
             }
             // Only nearly full, potions in stock and no merchant within reach: no trip for 10 min (the trip's want would hold
             // back the seek meanwhile).
@@ -9719,6 +9861,8 @@ void AutoAttack::onFrame()
             g_unreachableAt.clear();
             g_aggroFoes.clear();
             g_shotBy.clear();
+            g_foesSeen.clear();         // object ids are new in the game loaded
+            g_dangerSpots.clear();
             g_target = 0;
             // A shop trip and a walk of the game left (A1, 2026-11-11: dead with a shop open, then 27 min with no
             // order and no stuck report after the load).

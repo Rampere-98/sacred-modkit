@@ -1077,8 +1077,50 @@ void CombatLearn::observe(const Look& look)
         g_relative[look.foes[i].id] = middle > 0.0f ? p / middle : 1.0f;
     }
     g_heroFraction = static_cast<float>(heroHealth) / static_cast<float>(heroMax);
-    computeForecast(look, g_heroFraction);
-    computeForecast3(look, g_heroFraction);
+    // The group seen in the last 60 s within 15 tiles counts too, in view or not (the stuck solver, 2026-11-16, A7: «a fight
+    // with 2 enemies, 4 % to be lost, 99 % to win» and 12 s later dead under 3-5 goblins of level 2-5 of the pack that
+    // joined; the forecast counted the two in the look). A remembered one still alive within reach is added as one
+    // about to join, and the forecast is worked out on the longer list.
+    {
+        static std::unordered_map<uint32_t, DWORD> s_recent;
+        for (int i = 0; i < look.count; ++i)
+        {
+            if (look.foes[i].health > 0)
+            {
+                s_recent[look.foes[i].id] = look.now;
+            }
+        }
+        std::erase_if(s_recent, [&](const auto& kv) { return look.now - kv.second > 60000; });
+        std::vector<Foe> grown(look.foes, look.foes + look.count);
+        cObjectManager* objects = cObjectManager::instance();
+        if (objects && look.hero)
+        {
+            for (const auto& [id, seenAt] : s_recent)
+            {
+                bool inLook = false;
+                for (int i = 0; i < look.count && !inLook; ++i)
+                {
+                    inLook = look.foes[i].id == id;
+                }
+                const cCreature* c = inLook ? nullptr : objects->creature(id);
+                if (c && c->health > 0 && c->maxHealth > 0 && grown.size() < 24 &&
+                    std::hypot(static_cast<double>(c->x - look.hero->x), static_cast<double>(c->y - look.hero->y)) < 15.0 * 53.66563)
+                {
+                    Foe f;
+                    f.id = id;
+                    f.health = c->health;
+                    f.maxHealth = c->maxHealth;
+                    f.soon = true;
+                    grown.push_back(f);
+                }
+            }
+        }
+        Look longer = look;
+        longer.foes = grown.data();
+        longer.count = static_cast<int>(grown.size());
+        computeForecast(longer, g_heroFraction);
+        computeForecast3(longer, g_heroFraction);
+    }
 
     // The hirelings: health they lost to those aiming at them, and deaths.
     int hirelingLost = 0;
