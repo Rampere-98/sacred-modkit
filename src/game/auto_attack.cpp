@@ -3839,7 +3839,8 @@ namespace
         char line[32];
         while (std::fgets(line, sizeof(line), f))
         {
-            const int32_t number = std::atoi(line[0] == '-' ? line + 1 : line);
+            // «-n»: not reached in 20 min, kept only to study; tried again (the campaign's order, 2026-11-17)
+            const int32_t number = line[0] == '-' ? 0 : std::atoi(line);
             if (number > 0 && std::find(visited.begin(), visited.end(), number) == visited.end())
             {
                 visited.push_back(number);
@@ -3952,6 +3953,11 @@ namespace
                 {
                     why = "not on offer yet (the script's value is not 1)";
                 }
+                else if (const auto skip = g_orderSkipUntil.find(n);
+                         skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
+                {
+                    why = "its giver not reached in 20 min: tried again later";
+                }
                 else if (g_giversVisitedSeen && has(*g_giversVisitedSeen, n))
                 {
                     why = "its giver come to and the quest not taken (not yet for the hero)";
@@ -3978,23 +3984,53 @@ namespace
             LOG("AutoAttack: quest order: next {} (level {}), place {}/{}", g_orderNext,
                 g_orderPos ? kQuestOrder[g_orderPos - 1].level : 0, g_orderPos, kOrderCount);
         }
-        // Followed 20 min with no quest done: skipped 30 min. A giver has its own 20 min (left for the run).
+    }
+
+    // The goal picked by questTarget's last pass, for the time it is actually gone for (orderFollowTick).
+    struct OrderPick
+    {
+        int32_t number = 0;
+        GoalKind kind = GoalKind::Journal;
+        int tier = 0;
+        double distance = 0.0;
+        uint32_t objectiveKey = 0;
+    } g_orderPick;
+
+    // Called each step the agent goes for its quest goal (not while farming, paused or held): the goal picked, gone
+    // for 20 min in all with no step of it done and never 10 tiles nearer than before, is skipped 30 min, then tried
+    // again (its giver unreachable, a step the agent cannot do). Escorts and deadlines (tier 2) are never skipped so;
+    // a giver has its own 20 min.
+    void orderFollowTick(DWORD now)
+    {
         static int32_t s_head = 0;
-        static DWORD s_headSince = 0;
-        if (!front || front->number <= 0 || front->tier >= 2 || front->kind == GoalKind::Giver)
+        static uint32_t s_objective = 0;
+        static DWORD s_last = 0, s_spent = 0;
+        static double s_best = 0.0;
+        const OrderPick& p = g_orderPick;
+        if (p.number <= 0 || p.tier >= 2 || p.kind == GoalKind::Giver)
         {
             s_head = 0;
             return;
         }
-        if (front->number != s_head)
+        if (p.number != s_head || p.objectiveKey != s_objective || p.distance < s_best - 10.0 * kTileSize)
         {
-            s_head = front->number;
-            s_headSince = now;
+            s_best = p.distance;
+            s_head = p.number;
+            s_objective = p.objectiveKey;
+            s_spent = 0;
+            s_last = now;
+            return;
         }
-        else if (now - s_headSince > 1200000 && !(g_questsDoneAt && static_cast<int>(g_questsDoneAt - s_headSince) > 0))
+        if (now - s_last < 30000)
+        {
+            s_spent += now - s_last;
+        }
+        s_last = now;
+        if (s_spent > 1200000)
         {
             g_orderSkipUntil[s_head] = now + 1800000;
-            LOG("AutoAttack: quest order: {} skipped: followed 20 min with no quest done (tried again in 30 min)", s_head);
+            LOG("AutoAttack: quest order: {} skipped: gone for 20 min, no step done nor nearer (tried again in 30 min)",
+                s_head);
             s_head = 0;
         }
     }
@@ -4296,19 +4332,28 @@ namespace
                 const auto spent = g_giverTime.find(q.number);
                 if (off < 20.0 || (spent != g_giverTime.end() && spent->second > 1200000))
                 {
-                    s_visited.push_back(q.number);
                     noteGiver(q.number, off < 20.0);
                     if (off < 20.0)
                     {
+                        s_visited.push_back(q.number);
                         LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
                             q.number, q.x, q.y);
                     }
                     else
                     {
-                        LOG("AutoAttack: the giver of quest {} at tile {},{} not reached in 20 min: left for this run "
-                            "(to study: its layer or its way)",
+                        // Skipped 30 min and tried again (the owner, 2026-11-17: «la salta, lo registra y vuelve a
+                        // intentarla más tarde»), its 20 min begun anew.
+                        g_giverTime.erase(q.number);
+                        g_orderSkipUntil[q.number] = now + 1800000;
+                        LOG("AutoAttack: quest order: {} skipped: its giver at tile {},{} not reached in 20 min (tried "
+                            "again in 30 min; to study: its layer or its way)",
                             q.number, q.x, q.y);
                     }
+                    continue;
+                }
+                if (const auto skip = g_orderSkipUntil.find(q.number);
+                    skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
+                {
                     continue;
                 }
                 if ((heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number))
@@ -4520,6 +4565,7 @@ namespace
         }
         s_followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         g_followedNumber = g.kind == GoalKind::Journal ? g.number : 0;
+        g_orderPick = {g.number, g.kind, g.tier, g.distance, g.objectiveKey};
         if (g.kind == GoalKind::Giver)
         {
             if (g_giverFollowed == g.number && now - g_giverFollowedLast < 30000)
@@ -7479,6 +7525,7 @@ namespace
         {
             questHere = true;
             setIntent(Intent::Quest, who && who != 0xFFFFFFFFu ? "a quest creature to speak to" : "a quest's goal");
+            orderFollowTick(now);
             // A goal inside a house or cave: its interior lies far off on the map (HQ_HE_3_3_1's at 5859..5863,
             // 3851..3886, its doors 3433,2697 and 3436,2735; Manolito): the hero outside goes to the door whose inside
             // landing is nearest the goal, and steps on it (the game's own jump), not to the goal's tile.
