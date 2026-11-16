@@ -2112,8 +2112,10 @@ namespace
         std::string repeats;
         bool takenStyles[5] = {}, takenElements[5] = {};
         // An empty slot never left so while the backpack holds a weapon the hero can use (the player, 2026-11-16 22:40:
-        // «oblígales a que tengan las armas en las ranuras»): with nothing distinct, one whose style, then (only
-        // style, repeats another slot's. A slot given back for a repeat only for a distinct one; a common weapon for any of the class's own.
+        // «oblígales a que tengan las armas en las ranuras»): with nothing distinct, one whose style repeats another
+        // slot's; only then one whose element does, given back as soon as the backpack holds one of an element no
+        // other slot has (the player, 22:55: «obligación también los elementos»). A slot given back for a repeat only
+        // for a distinct one; a common weapon for any of the class's own.
         for (int relax = 0; relax <= 2 && !best; ++relax)
         {
             for (const Target& t : targets)
