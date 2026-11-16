@@ -564,9 +564,16 @@ namespace
             // The weapon hands (12, 13) go with the taskbar's weapon sets: an empty one is the player's choice.
             // But a shield into the free hand 12 beside a one-handed weapon (the player, 2026-11-16: «sí, que lo
             // ponga»: every class may carry one, the agent only kept the shield a hero started with).
-            const bool shieldBeside = slot == 12 && !current && !w.weapon && handClass(id) == 0 &&
-                                      handClass(fn<GetEquipped>(g_getEquipped)(hero, nullptr, 13)) == 3;
-            if (!current && (slot == 12 || slot == 13) && !shieldBeside)
+            // And a second one-handed weapon there too, of the same kind or another, for a hero with the skill for
+            // two (the player, 2026-11-16: «un método legal del juego que te permite equiparte 2 armas … con la
+            // condición de que no sean armas a dos manos»): the game's canDrop below says if the skill allows it.
+            const bool weaponBesideOneHanded = handClass(fn<GetEquipped>(g_getEquipped)(hero, nullptr, 13)) == 3;
+            const bool shieldBeside = slot == 12 && !current && !w.weapon && handClass(id) == 0 && weaponBesideOneHanded;
+            const bool secondBeside = slot == 12 && !current && handClass(id) == 3 && weaponBesideOneHanded;
+            // With the skill, a second weapon takes the shield's place (better() never swaps a shield for a weapon).
+            const bool secondOverShield = slot == 12 && current && handClass(id) == 3 && !worth(current).weapon &&
+                                          weaponBesideOneHanded;
+            if (!current && (slot == 12 || slot == 13) && !shieldBeside && !secondBeside)
             {
                 continue;
             }
@@ -588,7 +595,7 @@ namespace
                 continue;
             }
             const bool ownOverCommon = ownFirst && !handSlot && own && current && !currentOwn;
-            if (!ownOverCommon && !better(w, current, margin, worn))
+            if (!ownOverCommon && !secondOverShield && !better(w, current, margin, worn))
             {
                 continue;
             }
@@ -642,7 +649,7 @@ namespace
             }
             const Worth now = current ? worth(current) : Worth{};
             const float gain = !current        ? 1e9f
-                               : ownOverCommon ? 1e8f + scoreWith(w, worn, false)
+                               : ownOverCommon || secondOverShield ? 1e8f + scoreWith(w, worn, false)
                                                : (scoreWith(w, worn, false) - scoreWith(now, worn, true)) +
                                                      (w.value - now.value) * 0.01f;
             if (best < 0 || gain > bestGain)
