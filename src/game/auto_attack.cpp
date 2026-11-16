@@ -3849,26 +3849,18 @@ namespace
                 }
             }
         }
-        // A hero who has outgrown the region he stands in follows the main quest first, but not while a side quest in
-        // a fitting region (its top level 2 or more over his less) is open within 600 tiles and the main quest is
-        // farther than twice it (the quests' session, 2026-11-16: A2 and A6 in Braverock, 1601-1702, 15058 and 15059
-        // open and picked 0-3 times, the main quest 44 at weight 1 1300-1800 tiles off picked 23-28 times).
+        // A hero who has outgrown the region he stands in follows the main quest first, but not while a side quest of
+        // his journal is open within 600 tiles, whatever its region's level: every quest has to be done before the
+        // campaign ends (the quests' session, 2026-11-16: A2 and A6 in Braverock, 1601-1702, 15058 and 15059 open
+        // there and picked 0-3 times, the main quest 44 at weight 1 1300-1800 tiles off picked 23-28 times).
         if (outgrown)
         {
-            double fitting = 1e18;
-            for (const QuestGoal& o : g_questBook)
-            {
-                int lo = 0, hi = 0;
-                if (o.kind == GoalKind::Journal && !o.main && !o.blocked && o.distance < 600.0 * kTileSize && world &&
-                    sectorLevels(world, static_cast<int>(o.x / kTileSize), static_cast<int>(o.y / kTileSize), lo, hi) &&
-                    hi >= heroLevel - 2)
-                {
-                    fitting = std::min(fitting, o.distance);
-                }
-            }
+            const bool sideNear = std::any_of(g_questBook.begin(), g_questBook.end(), [](const QuestGoal& o) {
+                return o.kind == GoalKind::Journal && !o.main && !o.blocked && o.distance < 600.0 * kTileSize;
+            });
             for (QuestGoal& g : g_questBook)
             {
-                if (g.main && g.tier == 0 && !(fitting < 1e17 && g.distance > 2.0 * fitting))
+                if (g.main && g.tier == 0 && !sideNear)
                 {
                     g.tier = 1;
                 }
