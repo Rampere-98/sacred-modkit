@@ -195,6 +195,37 @@ namespace
         return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
     }
 
+    // The save before the last one back as the slot's (the stuck solver, 2026-11-16: A7 wrote GAME16 at 21:58:36 in the
+    // middle of a fight, at 70 % of its health, two potions left, 30 enemies of levels 10-30 about; every load put it back
+    // there and it died 15 times in 34 min, the tenth setting the character aside; A4 the same, 9 deaths). A player who
+    // dies three times from one save goes back to the one before it. The bad save is kept as GAMEnn.BAD. Once per 30 min.
+    bool restoreBackup()
+    {
+        static DWORD s_restoredAt = 0;
+        const DWORD now = GetTickCount();
+        if (s_restoredAt && now - s_restoredAt < 1800000)
+        {
+            return false;
+        }
+        const std::wstring base = g_path.substr(0, g_path.size() - 4);
+        const std::wstring backup = base + L".BAK", bad = base + L".BAD";
+        const DWORD attributes = GetFileAttributesW(backup.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY))
+        {
+            return false;
+        }
+        if (!MoveFileExW(g_path.c_str(), bad.c_str(), MOVEFILE_REPLACE_EXISTING) || !CopyFileW(backup.c_str(), g_path.c_str(), FALSE))
+        {
+            LOG("AgentSave: the save before the last could not be put back (error {})", GetLastError());
+            return false;
+        }
+        s_restoredAt = now;
+        g_deathsSinceSave = 0;
+        LOG("AgentSave: three deaths from one save: the save before it is the slot's again (the bad one kept as GAME{:02d}.BAD)",
+            g_slot);
+        return true;
+    }
+
     // On the window's thread (the game's own UI sends these there).
     void sendEvent(void*)
     {
@@ -543,6 +574,12 @@ void AgentSave::onFrame()
         {
             ++g_deathsSinceSave;
             LOG("AgentSave: death {} since the last save", g_deathsSinceSave);
+            if (g_deathsSinceSave >= 3 && restoreBackup())
+            {
+                writeDeaths();
+                load(now, "the hero died three times from one save: the one before it");
+                return;
+            }
             if (g_deathsSinceSave >= 10)
             {
                 setAside();
@@ -580,7 +617,9 @@ void AgentSave::onFrame()
     }
     // A fight foreseen holds the save, but not for ever: wanted for 3 minutes, the distance to the nearest enemy
     // below decides alone (A4, 2026-11-14: due twice in 40 min, 164 targets, never saved and not a word why).
-    const bool patient = now - s_wantedSince > 180000;
+    // 8 minutes, not 3 (the stuck solver, 2026-11-16: A7's GAME16 written at 21:58:36, 3.0 min after it was wanted, in a
+    // fight with two enemies and 70 % of its health: the wait ran out just then).
+    const bool patient = now - s_wantedSince > 480000;
     const int foes = CombatLearn::forecast().foes;
     // Not shut in a closed area (the stuck solver, 2026-11-14: A3 saved at 12:23, 13:21 and 13:31 inside the cave
     // 2.3 at 4043..4091 x 70..122 and could not leave it: every load, every 5-min stuck reload and every death put it
@@ -591,13 +630,28 @@ void AgentSave::onFrame()
     // none, in the middle of a zone of 15-25 levels; every load put it back there dry and it died 22 times in 43 min;
     // 35 of the 80 deaths of A1, A3, A6 and A8 came within 4 min of the previous one): the merchant first, the save
     // after, or at the latest 10 min after it was wanted.
-    if (!g_restartSave && now - s_wantedSince < 600000 && Gear::healingLeft() == 0 && Gear::wantsShop())
+    // With two potions or fewer too (A7 had two at 21:58:36).
+    if (!g_restartSave && now - s_wantedSince < 600000 && Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2 &&
+        Gear::wantsShop())
     {
         static DWORD s_dryToldAt = 0;
         if (now - s_dryToldAt > 60000)
         {
             s_dryToldAt = now;
-            LOG("AgentSave: the save waits (no healing potion: the merchant first)");
+            LOG("AgentSave: the save waits (two healing potions or fewer: the merchant first)");
+        }
+        return;
+    }
+    // Not in a fight or 15 s after one, whatever the wait (up to 12 min): the save is the place every load returns to.
+    // A restart's save too, 8 s after.
+    if ((!g_restartSave && now - s_wantedSince < 720000 && AutoAttack::foughtWithin(15000)) ||
+        (g_restartSave && AutoAttack::foughtWithin(8000)))
+    {
+        static DWORD s_fightToldAt = 0;
+        if (now - s_fightToldAt > 60000)
+        {
+            s_fightToldAt = now;
+            LOG("AgentSave: the save waits (a fight under way or just over)");
         }
         return;
     }
@@ -614,12 +668,16 @@ void AgentSave::onFrame()
     }
     // Not where enemies stand about, nor hurt (the live verifier, 2026-11-11: A1 saved beside a group and died 5 times
     // in 31 min, each load straight back among them): a player saves once the place is quiet and the hero whole.
-    if (g_restartSave ? health * 2 < hero->maxHealth
+    // A restart's save at 80 % of the health at least (A4 and A7, 2026-11-16 21:40: «a restart coming: saving GAME13 (405 of 756
+    // health)», in a fight, and eight deaths from that save in 32 min; A7 the same minute): not at half.
+    if (g_restartSave ? health * 100 < hero->maxHealth * 80
                       // Wanted for 3 minutes and never that quiet (A4 and A6, 2026-11-14: due 20 min and not saved,
                       // one fight after another): then with none within 10 tiles and half the health.
-                      : now - s_wantedSince > 180000
-                            ? AutoAttack::nearestHostileTiles() < 10.0 || health * 2 < hero->maxHealth
-                            : AutoAttack::nearestHostileTiles() < 25.0 || health * 10 < hero->maxHealth * 7)
+                      // Tighter (A7, 2026-11-16: saved at 70 % of its health among 30 enemies): 25 tiles and 70 % after
+                      // the wait, 40 tiles and 85 % before it.
+                      : now - s_wantedSince > 480000
+                            ? AutoAttack::nearestHostileTiles() < 25.0 || health * 10 < hero->maxHealth * 7
+                            : AutoAttack::nearestHostileTiles() < 40.0 || health * 100 < hero->maxHealth * 85)
     {
         static DWORD s_toldAt = 0;
         if (now - s_toldAt > 30000)
