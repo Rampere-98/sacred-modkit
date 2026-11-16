@@ -1,5 +1,6 @@
 #pragma once
 #include "ddraw9/d3d9_api.h"
+#include "ddraw9/gpu.h"
 #include "ddraw9/ground.h"
 #include "ddraw9/skin.h"
 #include "spin_lock.h"
@@ -150,6 +151,8 @@ namespace DDraw9
         void prepare(DWORD fvf);
         // The z-buffer and texture part of it (skinned draws set their own vertex format).
         void prepareTarget();
+        // The overlay drew since the last call: sets everything this device believes is set on Direct3D 9 again.
+        void syncOverlay();
         void bindVertexBuffer(d9::IDirect3DVertexBuffer9* vb, UINT stride);
         // Copies `indices` into the dynamic index buffer; returns the start index or -1.
         int uploadIndices(const WORD* indices, DWORD count);
@@ -168,7 +171,7 @@ namespace DDraw9
         void apply(const StateBlock& block);
         StateBlock* stateBlock(DWORD handle);
 
-        RecursiveSpinLock m_lock;
+        RecursiveSpinLock& m_lock = Gpu::stateLock();   // shared with the overlay: one Direct3D 9 device
         LONG m_refs = 1;
         DirectDraw* m_ddraw;
         d9::IDirect3DDevice9Ex* m_dev;
@@ -203,6 +206,7 @@ namespace DDraw9
         d9::IDirect3DVertexBuffer9* m_vb9 = nullptr;
         UINT m_vbStride9 = 0;
         d9::IDirect3DIndexBuffer9* m_ib9Bound = nullptr;
+        uint32_t m_overlayEpoch = 0;
         DWORD m_maxStage = 0;                   // stages above have no texture
 
         // Index buffer ring for DrawIndexedPrimitiveVB (Direct3D 9 draws from vertex buffers need indices in one).

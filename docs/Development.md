@@ -24,6 +24,7 @@ What the game's code at those addresses does is in [`RE_NOTES.md`](RE_NOTES.md),
 | `src/ui/form.*` | `Ui::Form`: settings windows declared in code (pages, groups, rows of controls bound to ini keys), laid out and run as dialogs |
 | `src/log.*`, `src/crash_dump.*` | `SacredBild.log`, minidumps on crashes |
 | `src/patch.*`, `src/sig.*` | Code patches and hooks; byte signature search |
+| `sacred_core` (CMake) | `src/fmt.*`, `log.*`, `patch.*`, `sig.*` as a static library, linked by SacredBild and by Sacred Gear (`gear/`, see [Sacred Gear](Gear.md)) |
 | `src/spin_lock.h` | Locks for the render thread's hot paths |
 | `src/mem.h` | Fields of granny.dll's objects by byte offset (`Mem::field`) |
 | `src/profiler.*` | `[Debug] Profiler` |
@@ -33,6 +34,8 @@ What the game's code at those addresses does is in [`RE_NOTES.md`](RE_NOTES.md),
 | `src/sacred/` | The game's classes as structs (the Sacred Gold API): fields at their offsets and vtables as structs of function pointers, both checked by `static_assert`, member functions calling the game's code. `engine.h` (cEngine, orders), `object.h` (cObject / cCreature, cObjectManager), `world.h` (cWorldView, sectors, tiles, map data), `render.h` (dxDriver7, textures, cQuadBatcher), `ui.h` (cUI_Control2 / cUI_Window2 and their subclasses, cUI_Manager, events, fonts), `mouse.h`, `text.h`, `net.h` (cGCclass; gameserver.exe's cApp / cNetServer); `address.h` the typed addresses, `vector.h` the exe's std::vector |
 | `src/game/gameserver*` | The same for gameserver.exe, and its patches |
 | `src/game/resolution.*`, `resolution_sites.inc` | Any resolution: window, back buffer, world view; the 1024x768 constants patched (generated) |
+| `src/game/ui_state.*` | What the UI manager shows and who gets the input, by its own rules (mode, windows drawn alone, HUD, message box, focus); see `docs/UI_SYSTEM.md` |
+| `src/game/ui_windows.*` | The manager's windows, menus, message box, popups and text lines with their virtual functions wrapped: which one runs on a thread (`current()`), frames per object for UiAnchor |
 | `src/game/ui_canvas.*` | The 1024x768 UI in a scaled, centered canvas; cursor mapping |
 | `src/game/ui_anchor.*` | HUD windows placed at the screen edges (`[UI] Anchor`, `[UI.Layout]`) |
 | `src/game/device_proxy.*` | The IDirect3DDevice7 the game gets: UI draws into the canvas, world draws to the batcher |
@@ -102,6 +105,21 @@ Reverse engineering helpers (how addresses and offsets were found):
 | `tools/scan_res.py` | Every instruction that uses a 1024x768-related constant |
 | `tools/check_rets.py <address>...` | `ret` sizes, i.e. stack argument counts |
 | `tools/profile_report.py <SacredBild-profile.txt>` | Names the hot spots of a `[Debug] Profiler` profile |
+
+## Game-launch lock
+
+Several agents share the game folders. Launches of `Sacred.exe` / `SacredReborn.exe` run in parallel: each gets a unique `-gear-instance=NAME`, and Gear writes its outputs to `GearAutomation\NAME\`. What still collides is copying DLLs and mods into the game folder (a running game holds them, and one agent would overwrite another's build), so that step goes through the machine-wide lock `tools/game-lock.ps1`. The lock is one file, `%ProgramData%\sacred-bild\game.lock` (override: `-LockPath` or `SACRED_GAME_LOCK`), holding the owner's `-Id` (unique text per agent, e.g. `agent-uitest-1`), PID and start time. It is created atomically, waiters log the wait every 5 s.
+
+Hold the lock only for the copy, then release it before launching:
+
+    powershell -NoProfile -File tools\game-lock.ps1 acquire -Id <agent-id>
+    ... copy ddraw.dll / SacredGear.dll / mods ...
+    powershell -NoProfile -File tools\game-lock.ps1 release -Id <agent-id>
+    Sacred.exe -gear-instance=<agent-id> ...
+
+Or in one step: `powershell -NoProfile -File tools\game-lock.ps1 run -Id <agent-id> -- <copy command> [args]` (acquires, runs, releases, exits with the command's exit code).
+
+`status` shows the holder. `release` refuses (exit 3) if another id holds it; `-Force` overrides. Acquire exits 2 on timeout (`-TimeoutSeconds`, default 3600). A lock is stale and taken over after `-MaxAgeMinutes` (default 30), or when its owner PID is gone (`run` records the wrapper's PID; with `acquire` pass `-OwnerPid` of a long-lived process, otherwise only the age applies). Always release.
 
 ## Build
 

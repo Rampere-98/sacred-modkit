@@ -18,6 +18,12 @@ namespace Config
             Always,
         };
         Frame frame = Frame::Auto;
+        // Automation runs (-gear-auto): a framed window of the size above, placed at the work area's bottom-right
+        // corner unless -gear-window=WxH+X+Y gave a position (client area's top-left, in screen pixels).
+        bool automationWindow = false;
+        bool hasPosition = false;
+        int x = 0;
+        int y = 0;
         bool clipCursor = true;       // mouse confined to the game window while it is in the foreground
         // Never takes the foreground ([Display] NoActivate, the agent copies: the player, 2026-11-11, «consigues abrir
         // los procesos sin molestar cuando uso el pc?»): the game takes it at its start (it waits for that), then gives it

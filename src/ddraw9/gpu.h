@@ -24,6 +24,16 @@ namespace DDraw9::Gpu
     void matchBackBuffer(UINT width, UINT height);
     void freezeBackBuffer();
 
+    // Serializes everything that changes the device's state or render target: the Direct3D 7 device's calls (they
+    // hold it while they draw) and the overlay (it swaps the render target and draws). Without it, a draw of the
+    // game's second thread landed in the back buffer, or with the overlay's FVF and texture, while the overlay ran.
+    RecursiveSpinLock& stateLock();
+
+    // The overlay changed the device's state and put it back (a state block): the Direct3D 7 device, which skips
+    // what it believes is set already, compares the epoch it last saw and sets its state again if it moved.
+    uint32_t overlayEpoch();
+    void overlayDrew();
+
     // Shows `sourceRect` of the render target `source` in the window.
     HRESULT present(d9::IDirect3DSurface9* source, const RECT* sourceRect);
 

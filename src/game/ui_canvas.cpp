@@ -1,9 +1,11 @@
 #include "game/ui_canvas.h"
 #include "game/agent_cursor.h"
+#include "game/build.h"
 #include "game/controller.h"
 #include "game/device_proxy.h"
 #include "game/resolution.h"
 #include "game/sacred_addr.h"
+#include "game/ui_state.h"
 #include "config/debug.h"
 #include "config/ui.h"
 #include "log.h"
@@ -31,6 +33,7 @@ namespace
         float top = 0.0f;
     };
     Layout g_game, g_menu;
+    Layout g_startMenu;     // ReBorn: the start menu, whose entries carry the center offset like its in-game windows
     thread_local int t_depth = 0;
     thread_local const Layout* t_layout = nullptr;  // taken by the outermost UI scope for all of its draws
     thread_local UiCanvas::Frame t_frame;
@@ -38,6 +41,7 @@ namespace
     thread_local bool t_trace = false;
     std::atomic<ULONGLONG> g_tracePopupsUntil{0};
     bool g_traceKeyDown = false;
+    std::atomic<int> g_autoTrace{0};     // UI frames to trace without Scroll Lock (ReBorn: after a menu screen change)
 
     decltype(Addr::getClientCursorPos)::Ptr g_origGetClientCursorPos = nullptr;
     decltype(Addr::cMouse_renderCursor)::Ptr g_origRenderCursor = nullptr;
@@ -46,30 +50,117 @@ namespace
     decltype(Addr::renderSavePortrait)::Ptr g_origSavePortrait = nullptr;
     decltype(Addr::cInventoryEntry_render)::Ptr g_origHeldItem = nullptr;
 
-    bool fullScreenWindowOpen(const cUI_Manager* manager)
+    // ReBorn's menu screens: the start menu has the center offset of its entries; a screen bigger than 1024x768 is
+    // laid out for the real screen (the character selection: a 3D scene over the whole screen) and drawn and picked
+    // as it is; the others are 1024x768 at the top left.
+    const Layout& reBornMenuLayout(const cUI_Manager& manager)
     {
-        for (const cUI_Window2* window : manager->windows)
+        static const Layout native{1.0f, 0.0f, 0.0f};
+        const Layout* chosen = &g_menu;
+        bool start = false;
+        int shown = -1;
+        for (int i = 0; i < cUI_Manager::menuCount; ++i)
         {
-            if (!window || !window->visible())
+            const cUI_Window2* menu = manager.menus[i];
+            if (!menu || !menu->visible())
             {
                 continue;
             }
-            const int x = window->x, y = window->y, w = window->width, h = window->height;
-            if (x <= 0 && y <= 0 && x + w >= 1023 && y + h >= 767)
+            shown = shown < 0 ? i : shown;
+            if (i == 0)
             {
-                return true;
+                start = true;
+            }
+            else if (menu->width > 1024 || menu->height > 768)
+            {
+                chosen = &native;
+                break;
             }
         }
-        return false;
+        if (chosen == &g_menu && start)
+        {
+            chosen = &g_startMenu;
+        }
+        static const Layout* last = nullptr;
+        if (chosen != last)
+        {
+            last = chosen;
+            if (Config::debug.uiTrace)
+            {
+                g_autoTrace = 3;
+            }
+            LOG("UI canvas: menu layout {} (first visible screen {})", chosen == &native ? "native" : chosen == &g_startMenu ? "start menu" : "canvas", shown);
+            for (int i = 0; i < cUI_Manager::menuCount; ++i)
+            {
+                const cUI_Window2* menu = manager.menus[i];
+                if (menu && menu->visible())
+                {
+                    LOG("UI canvas: menu {} visible at {},{} {}x{}", i, menu->x, menu->y, menu->width, menu->height);
+                }
+            }
+        }
+        return *chosen;
     }
 
-    // The UI manager's state picks the layout: in game, unless a full-screen window (options, savegame, character,
-    // megamap) replaces the game's screen, which the manager then draws alone. A UI scope keeps the layout it
-    // started with.
+    // Sacred Gear's cursor filter (SacredBild_UiSetCursorFilter) and its answer for the current UI frame.
+    using CursorFilterFn = int(__cdecl*)(int x, int y);
+    std::atomic<CursorFilterFn> g_cursorFilter{nullptr};
+    std::atomic<bool> g_cursorHidden{false};
+    thread_local bool t_realCursor = false;    // the held item follows the real cursor
+    constexpr int kHiddenCursor = -30000;      // far off every window, still a short
+
+    bool cursorHidden() { return !t_realCursor && g_cursorHidden.load(std::memory_order_relaxed); }
+
+    bool modUiAt(int x, int y)
+    {
+        const CursorFilterFn filter = g_cursorFilter.load(std::memory_order_acquire);
+        return filter && filter(x, y) != 0;
+    }
+
+    // The UI manager's state picks the layout: in game, unless a window the manager draws alone (savegame, options,
+    // character, world map) replaces the game's screen. A UI scope keeps the layout it started with.
     const Layout& liveLayout()
     {
         const cUI_Manager* manager = cUI_Manager::instance();
-        const bool inGame = manager && (manager->flags & cUI_Manager::inGame) && !fullScreenWindowOpen(manager);
+        const bool inGame = manager && (manager->flags & cUI_Manager::inGame) && !UiState::exclusiveWindow();
+        if (Sacred::reBorn())
+        {
+            static bool lastInv = false;
+            const bool inv = manager && UiState::shown(UiState::Window::inventory);
+            if (inv != lastInv)
+            {
+                lastInv = inv;
+                if (inv && Config::debug.uiTrace) { g_autoTrace = 3; }
+            }
+            static const cUI_Window2* lastExclusive = nullptr;
+            const cUI_Window2* ex = manager ? UiState::exclusiveWindow() : nullptr;
+            if (ex != lastExclusive)
+            {
+                lastExclusive = ex;
+                if (ex)
+                {
+                    LOG("UI canvas: exclusive window at {},{} {}x{}", ex->x, ex->y, ex->width, ex->height);
+                }
+                else
+                {
+                    LOG("UI canvas: no exclusive window");
+                }
+            }
+        }
+        if (!inGame && Sacred::reBorn() && manager && (manager->flags & cUI_Manager::inGame))
+        {
+            // ReBorn's world map is a window of the screen's size: drawn and picked as it is.
+            const cUI_Window2* alone = UiState::exclusiveWindow();
+            if (alone && (alone->width > 1024 || alone->height > 768))
+            {
+                static const Layout native{1.0f, 0.0f, 0.0f};
+                return native;
+            }
+        }
+        if (!inGame && Sacred::reBorn() && manager && (manager->flags & cUI_Manager::inMenus))
+        {
+            return reBornMenuLayout(*manager);
+        }
         return inGame ? g_game : g_menu;
     }
 
@@ -152,7 +243,10 @@ namespace
     {
         const UiCanvas::Frame current = UiCanvas::frame();
         UiCanvas::FrameScope unconfined{{current.x, current.y, false}};
+        const bool real = t_realCursor;
+        t_realCursor = true;
         g_origHeldItem(self, edx, device, flag);
+        t_realCursor = real;
     }
 
     uint32_t __fastcall hookSavePortrait(void* self, void* edx, const char* path, int w, int h, float scale)
@@ -218,9 +312,11 @@ namespace
     }
 
     // The world cursor handler reads the mouse once (redirected to physical) and also asks the UI with it.
+    // Mod UI (Sacred Gear) counts as UI there: the world picks nothing under it.
     bool __fastcall isCursorOverUiPhysical(cUI_Manager* manager, void* /*edx*/, int x, int y)
     {
-        return manager->isCursorOverUi(UiCanvas::toVirtualX(x), UiCanvas::toVirtualY(y));
+        const int vx = UiCanvas::toVirtualX(x), vy = UiCanvas::toVirtualY(y);
+        return modUiAt(vx, vy) || manager->isCursorOverUi(vx, vy);
     }
 
     int __fastcall physicalGetX(cMouse* mouse)
@@ -244,8 +340,9 @@ namespace
     }
 
     // UI reads of the cursor: canvas coordinates moved into the calling thread's frame.
-    int frameX(int canvas) { return static_cast<int>(std::lround(canvas - t_frame.x)); }
-    int frameY(int canvas) { return static_cast<int>(std::lround(canvas - t_frame.y)); }
+    // Under mod UI they see it far off the screen: no window hovers or shows a tooltip under a mod's panel.
+    int frameX(int canvas) { return cursorHidden() ? kHiddenCursor : static_cast<int>(std::lround(canvas - t_frame.x)); }
+    int frameY(int canvas) { return cursorHidden() ? kHiddenCursor : static_cast<int>(std::lround(canvas - t_frame.y)); }
 
     int __fastcall frameGetX(cMouse* mouse)
     {
@@ -260,7 +357,7 @@ namespace
     void* __cdecl frameMouseInstance()
     {
         cMouse* mouse = cMouse::instance();
-        if (t_frame.x == 0.0f && t_frame.y == 0.0f)
+        if (t_frame.x == 0.0f && t_frame.y == 0.0f && !cursorHidden())
         {
             return mouse;
         }
@@ -273,7 +370,11 @@ namespace
     void __fastcall frameCursorPos(cMouse* mouse, void* /*edx*/, int* x, int* y)
     {
         Addr::cMouse_getCursorPos(mouse, x, y);
-        if (mouse->cursorImage)
+        if (mouse->cursorImage && cursorHidden())
+        {
+            *x = *y = kHiddenCursor;
+        }
+        else if (mouse->cursorImage)
         {
             *x = frameX(*x);
             *y = frameY(*y);
@@ -283,16 +384,32 @@ namespace
 
 bool UiCanvas::enabled() { return g_enabled; }
 
-bool UiCanvas::fullScreenWindowOpen()
-{
-    const cUI_Manager* manager = cUI_Manager::instance();
-    return manager && ::fullScreenWindowOpen(manager);
-}
-
 bool UiCanvas::inGame()
 {
     const cUI_Manager* manager = cUI_Manager::instance();
     return manager && (manager->flags & cUI_Manager::inGame);
+}
+
+void UiCanvas::updateCursorFilter()
+{
+    const cMouse* mouse = g_cursorFilter.load(std::memory_order_acquire) ? cMouse::instance() : nullptr;
+    g_cursorHidden.store(mouse && modUiAt(mouse->x, mouse->y), std::memory_order_relaxed);
+}
+
+// Sacred Gear: `filter(x, y)` (canvas coordinates) tells whether mod UI lies there; nullptr: none. Returns 0 while
+// the canvas is off (the UI's cursor reads are not SacredBild's then).
+extern "C" int __cdecl SacredBild_UiSetCursorFilter(int(__cdecl* filter)(int x, int y))
+{
+    if (!g_enabled)
+    {
+        return 0;
+    }
+    g_cursorFilter.store(filter, std::memory_order_release);
+    if (!filter)
+    {
+        g_cursorHidden = false;
+    }
+    return 1;
 }
 
 UiCanvas::Bounds UiCanvas::menuCanvas()
@@ -314,6 +431,15 @@ UiCanvas::Frame UiCanvas::placed(float x, float y)
     // Frames exist in game only. Whole pixels for the frame's origin, so the UI's texels keep their alignment (0.5
     // gives the canvas itself).
     const Layout& l = g_game;
+    if (Sacred::reBorn())
+    {
+        // The windows' coordinates carry the offset of their anchor already, so against the centered frame (offset 0)
+        // an edge anchor only has to make up for the scaling of that offset: physical = fraction * W * (1 - scale)
+        // + x * scale. Their 1024x768 rects are not at the frame's origin, so they are not confined.
+        const float w = static_cast<float>(Resolution::width()), h = static_cast<float>(Resolution::height());
+        return {(std::clamp(x, 0.0f, 1.0f) - 0.5f) * w * (1.0f - l.scale) / l.scale,
+                (std::clamp(y, 0.0f, 1.0f) - 0.5f) * h * (1.0f - l.scale) / l.scale, false};
+    }
     const float originX = std::floor((Resolution::width() - 1024.0f * l.scale) * std::clamp(x, 0.0f, 1.0f));
     const float originY = std::floor((Resolution::height() - 768.0f * l.scale) * std::clamp(y, 0.0f, 1.0f));
     return {(originX - l.left) / l.scale, (originY - l.top) / l.scale, true};
@@ -387,12 +513,13 @@ void UiCanvas::enter(Mode mode)
     if (g_enabled && t_depth++ == 0)
     {
         t_outerFrame = t_frame;
-        t_frame = {0.0f, 0.0f, mode == Mode::Canvas};
+        t_frame = {0.0f, 0.0f, mode == Mode::Canvas && !Sacred::reBorn()};     // ReBorn's windows reach past the block
         t_layout = &liveLayout();
         if (Config::debug.uiTrace && mode == Mode::Canvas)
         {
             const bool down = GetAsyncKeyState(VK_SCROLL) < 0;
-            if (down && !g_traceKeyDown)
+            const bool autoTrace = g_autoTrace.load() > 0 && --g_autoTrace >= 0;
+            if ((down && !g_traceKeyDown) || autoTrace)
             {
                 t_trace = true;
                 g_tracePopupsUntil = GetTickCount64() + 5000;
@@ -465,6 +592,17 @@ void UiCanvas::install()
     };
     g_game = centered(Config::ui.scale > 0.0f ? std::min(Config::ui.scale, fit) : fit);
     g_menu = Config::ui.scaleMenus ? g_game : centered(fit);
+    if (Sacred::reBorn())
+    {
+        // ReBorn's in-game windows sit in screen coordinates: each has the offset of the edge it is anchored to
+        // ((W - 1024) * 0, 1/2 or 1 horizontally, likewise vertically) added to its 1024x768 position, the centered
+        // ones included. The canvas frame (offset 0) is the centered placement: left + x * scale puts the block of
+        // centered windows where the canvas would be. Windows anchored elsewhere get frames (placed). The menus
+        // are drawn in 1024x768 at the top left, as in the other builds.
+        const float cx = static_cast<float>((Resolution::width() - 1024) / 2), cy = static_cast<float>((Resolution::height() - 768) / 2);
+        g_game = {g_game.scale, g_game.left - cx * g_game.scale, g_game.top - cy * g_game.scale};
+        g_startMenu = {g_menu.scale, g_menu.left - cx * g_menu.scale, g_menu.top - cy * g_menu.scale};
+    }
     g_enabled = true;
     LOG("UI canvas: in game scale {:.3f} at {},{}, menus scale {:.3f} at {},{}", g_game.scale, g_game.left, g_game.top,
         g_menu.scale, g_menu.left, g_menu.top);
@@ -477,9 +615,9 @@ void UiCanvas::install()
     for (uintptr_t site : Addr::worldMouseReads) redirected += Patch::redirectCall(site, reinterpret_cast<void*>(&physicalMouseInstance));
     redirected += Patch::redirectCall(Addr::worldCursorUiTestCall, reinterpret_cast<void*>(&isCursorOverUiPhysical));
     LOG("UI canvas: {} world mouse reads redirected", redirected);
-    if (Config::ui.anchor)
     {
-        // The UI's own reads of the cursor follow the frame they run in.
+        // The UI's own reads of the cursor follow the frame they run in (anchored windows, windows Sacred Gear moves)
+        // and hide it under mod UI.
         redirected = 0;
         for (uintptr_t site : Addr::uiMouseReads) redirected += Patch::redirectCall(site, reinterpret_cast<void*>(&frameMouseInstance));
         for (uintptr_t site : Addr::uiGetXCalls) redirected += Patch::redirectCall(site, reinterpret_cast<void*>(&frameGetX));

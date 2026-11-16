@@ -27,6 +27,7 @@
 #include "game/sound_lock.h"
 #include "game/sprite_quads.h"
 #include "game/ui_anchor.h"
+#include "game/ui_windows.h"
 #include "game/ui_canvas.h"
 #include "game/world_passes.h"
 #include "net/connection.h"
@@ -58,9 +59,24 @@ namespace
         {0x451BBE74, "sacred.exe, German"},
         {0x452F85C7, "Sacred.exe, English (GOG; Steam: the same exe wrapped by SteamStub)"},
         {0x451BBDBF, "gameserver.exe, German"},
+        {0x45462A42, "SacredReborn Gameserver.exe"},
         {0x452F8580, "GameServer.exe, English (GOG, Steam)"},
     };
+
+    // ReBorn's jump from the object culling code into the code it appended to the exe (what makes it handle the
+    // screen size itself); the German and English builds do not have it.
+    constexpr char kReBornMarker[] = "0F BF 54 24 68 E9 ?? ?? ?? ?? 90 90 90 90 90 90 03 D7 89 7C 24 60";
+    bool g_reBorn = false;
+
+    bool findReBorn()
+    {
+        uintptr_t found = 0;
+        const Sig::Entry marker[] = {{"ReBorn marker (only in ReBorn)", kReBornMarker, 0, Sig::Take::Match, &found}};
+        return Sig::resolve(marker) == 0;
+    }
 }
+
+bool Sacred::reBorn() { return g_reBorn; }
 
 void Sacred::logHostExe()
 {
@@ -75,13 +91,26 @@ void Sacred::logHostExe()
             name = b.name;
         }
     }
+    if (g_reBorn)
+    {
+        name = "SacredReborn.exe, Sacred ReBorn (the German build, patched)";
+    }
     LOG("Host exe: timestamp={:08x} sizeOfImage={:08x} ({})", ts, nt->OptionalHeader.SizeOfImage, name);
 }
 
 bool Sacred::resolveAddresses()
 {
+    g_reBorn = findReBorn();
     logHostExe();
-    const size_t missing = Sig::resolve(kAddressSigs);
+    size_t missing = Sig::resolve(kAddressSigs);
+    if (g_reBorn)
+    {
+        LOG("Sacred ReBorn: it patched the resolution code itself and loads the language files itself");
+    }
+    else
+    {
+        missing += Sig::resolve(kOptionalAddressSigs);
+    }
     if (missing)
     {
         LOG("{} of {} game addresses not found", missing, std::size(kAddressSigs));
@@ -104,6 +133,7 @@ void Sacred::installHooks()
     WideSectors::install();
     Focus::install();
     UiCanvas::install();
+    UiWindows::install();
     UiAnchor::install();
     Overlay::install();
     Controller::install();

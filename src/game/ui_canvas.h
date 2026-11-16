@@ -15,11 +15,13 @@ namespace UiCanvas
     // Hooks the cursor and the world's mouse reads; call inside a Patch transaction after Resolution::install.
     void install();
     bool enabled();
-
-    // An in-game window covering the whole 1024x768 screen (options, savegame, character, megamap) is open.
-    bool fullScreenWindowOpen();
     // The UI manager is in game (not in the menus or leaving them).
     bool inGame();
+
+    // Sacred Gear's cursor filter (export SacredBild_UiSetCursorFilter) says whether mod UI lies under the cursor.
+    // While it does, the UI's own cursor reads see the cursor far off the screen (no hover or tooltip of a window
+    // under a mod's panel) and the world picks nothing there. Asked once per UI frame (cUI_Manager::render).
+    void updateCursorFilter();
 
     // Canvas placement in physical pixels (in game or menus, see above).
     float left();
