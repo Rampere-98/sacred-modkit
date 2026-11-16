@@ -77,7 +77,13 @@ def merge(paths):
         cls = np.zeros(len(sq), dtype=np.uint8)
         # Same order as routeWithin: walked or walkable by the tile test first, then blocked again and again, a shut
         # gate, the game's tile kind, the tile test alone.
-        walk = (visits > 0) | (scan == 1)
+        # Water (kind 2) is no ford for the others because one copy's hero crossed it (the stuck solver, 2026-11-16: A8, the
+        # Daemon, left one visit and a tile test of "walkable" on 226 water tiles, a row across the river at y=2489, x 3171-3176;
+        # the net's trip from the west bank (A2, A6, A7) went over it, 431 tiles for 116, and the heroes came to the water and
+        # back, a minute a turn, for hours): water counts as walked only with 3 visits of the same copy, and the tile test
+        # alone never makes it walkable.
+        water = (kind & 0xF) == 2
+        walk = (((visits > 0) | (scan == 1)) & ~water) | (water & (visits >= 3))
         wall = ~walk & (blocked >= 2)
         rest = ~walk & ~wall
         gate = rest & ((kind & 0xF) == 7)
