@@ -1759,7 +1759,18 @@ namespace
         const uint8_t kind = id ? HeroProfile::itemWeaponKind(id) : 0;
         if (!kind)
         {
-            return -1;
+            // Subclass 0 is a weapon too, a one-handed one (0x5CEC00's class 3): A5's Dark Elf, 2026-11-16 23:40, two
+            // blades of subclass 0 (TYPE_WEAPON_DUNKELELF_05, TYPE_WEAPON_2403), both physical, in slots 1 and 2 beside
+            // a physical two-handed sword in use: taken for no weapon, no slot rule saw them. A weapon by the type's
+            // category (+0x2E 5) and its damage.
+            const auto* types = static_cast<const uint8_t*>(typeMgr());
+            const uint32_t type = id ? typeOf(id) : 0;
+            float d[4] = {};
+            if (!types || !type || type > 0x10000 || types[type * 0x80 + 0x2E] != 5 || !damageOf(id, d))
+            {
+                return -1;
+            }
+            return twoHanded(id) ? 2 : 3;
         }
         // Five styles, one a slot (the player, 2026-11-16: «5 categorías que todos pueden usar, una por cada ranura»):
         // 0 ranged (bow 7, crossbow 12, the dwarf's guns 13 and 14: Manolito, block BK, 0x54A2A0; throwing knives, 6,
@@ -2296,7 +2307,7 @@ namespace
                 }
                 int weak = worth(wa).score < worth(wb).score ? a : b;
                 weak = weak == active ? (weak == a ? b : a) : weak;
-                if (weak == active || !g_agentPut.count(slotWeapon(pack, weak)) ||
+                if (weak == active || (!agentCopy() && !g_agentPut.count(slotWeapon(pack, weak))) ||
                     std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == weak; }))
                 {
                     continue;
