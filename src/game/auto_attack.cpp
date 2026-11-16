@@ -4037,8 +4037,9 @@ namespace
         // quest failed 35-55 s after it was taken, heroes of level 16-24 (the quests' session, 2026-11-16: A2 16:03,
         // A3 21:02 and 21:38, A4 18:22). Neither followed nor taken: its giver's sign is left too.
         // 1802 is the Dreamer of Winters (R18NQ02, zone 40). 1002 is the journal's R10NQ02 «Planes de la
-        // inquisición» (zone 8-18), held too: it failed 35-55 s after it was taken in A2, A3, A4 and A8, its cause not
-        // known yet (asked of Manolito, 2026-11-17).
+        // inquisición» (zone 8-18), held too: a stealth quest, failed once its guards see the hero (docs/QUESTS.md;
+        // 35-55 s after it was taken in A2, A3, A4 and A8): not for the agent until it can lure them off with the
+        // bells and keep out of their sight.
         static constexpr std::pair<int32_t, int> kMinLevel[] = {{rq(18, 2), 35}, {1002, 35}};
         const int heroLv = HeroProfile::current().level;
         auto tooLow = [heroLv](int32_t number) {
