@@ -574,10 +574,23 @@ namespace
             // holds, nor a shield beside a two-handed weapon. A player would have to empty the other hand first.
             // And a weapon only in the hand the game holds it in (the player, 2026-11-16: A2 «está sujetando mal el
             // hacha»: a subclass-3 axe, a hand-0 weapon, had gone to 13): hand class 1 never in 13. A one-handed
-            // weapon in 12 is the second weapon of the skill for two, left to the game's own test (the reviewer, M1).
+            // weapon in 12 only as the second weapon of the skill for two: another one-handed one in 13 and the
+            // game's own test on the slot in use (canDrop: the skill, AW-1 step 7), since the equipping runs none
+            // (the player, 2026-11-16: A7's Dwarf held his pistol in the shield hand, the weapon hand empty).
             if (slot == 13 && handClass(id) == 1)
             {
                 continue;
+            }
+            if (slot == 12 && handClass(id) == 3)
+            {
+                const uint32_t weaponHand = fn<GetEquipped>(g_getEquipped)(hero, nullptr, 13);
+                const uint8_t* entry = entryOf(static_cast<int>(hero->id));
+                const uint32_t inUse = entry ? *reinterpret_cast<const uint16_t*>(entry + 0xD58) : 0xFFFFu;   // kActiveSlot
+                const int may = weaponHand && handClass(weaponHand) == 3 && inUse < 5 ? canDrop(inUse, 0, id) : 0;
+                if (may != 1 && may != 2)
+                {
+                    continue;
+                }
             }
             if (slot == 12 || slot == 13)
             {
@@ -1888,7 +1901,11 @@ namespace
         for (int slot = 0; slot < open; ++slot)
         {
             const uint32_t h0 = slotItem(pack, slot, 0), h1 = slotItem(pack, slot, 1);
-            const bool wrongHand = h1 && !h0 && handClass(h1) == 1;
+            // A hand-0 weapon alone in hand 1, or a one-handed one alone in hand 0 (never legal: the second weapon of
+            // the skill for two needs a first one in hand 1).
+            const bool wrongHand = (h1 && !h0 && handClass(h1) == 1) || (h0 && !h1 && handClass(h0) == 3);
+            const uint32_t wrongId = h1 ? h1 : h0;
+            const uint32_t from = h1 ? 1u : 0u, to = 1u - from;
             const uint32_t twoWith = h0 && h1 && h0 != h1 ? (twoHanded(h0) ? h1 : twoHanded(h1) ? h0 : 0) : 0;
             if (!wrongHand && !twoWith)
             {
@@ -1912,7 +1929,7 @@ namespace
                         Act::allowed(Act::Kind::WeaponSlots, "leave a weapon slot whose weapon is in the wrong hand, to mend it"))
                     {
                         LOG("Gear: weapon slot {} holds {:x} in the wrong hand: slot {} taken to mend it", slot + 1,
-                            wrongHand ? h1 : twoWith, other + 1);
+                            wrongHand ? wrongId : twoWith, other + 1);
                         g_slotSwitchAt = GetTickCount();
                         g_switchTo = static_cast<uint32_t>(other);
                         Inject::engineCall(&switchSlot, nullptr);
@@ -1927,15 +1944,16 @@ namespace
             }
             if (wrongHand)
             {
-                fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), 1, 0, 1);
-                fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), 0, h1, 1);
-                const bool done = slotItem(pack, slot, 0) == h1 && !slotItem(pack, slot, 1);
+                fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), from, 0, 1);
+                fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), to, wrongId, 1);
+                const bool done = slotItem(pack, slot, static_cast<int>(to)) == wrongId && !slotItem(pack, slot, static_cast<int>(from));
                 if (!done && !slotItem(pack, slot, 0) && !slotItem(pack, slot, 1))
                 {
-                    fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), 1, h1, 1);  // as it was
+                    fn<SetSlotHand>(g_setSlotHand)(pack, nullptr, static_cast<uint32_t>(slot), from, wrongId, 1);  // as it was
                 }
-                LOG("Gear: weapon slot {}: {:x} (subclass {}, the game holds it in hand 0) moved from hand 1 to hand 0: {}",
-                    slot + 1, h1, HeroProfile::itemWeaponKind(h1), done ? "done" : "refused, left as it was");
+                LOG("Gear: weapon slot {}: {:x} (subclass {}, the game holds it in hand {}) moved from hand {} to hand {}: {}",
+                    slot + 1, wrongId, HeroProfile::itemWeaponKind(wrongId), to, from, to,
+                    done ? "done" : "refused, left as it was");
                 if (!done)
                 {
                     g_slotsReady = false;
