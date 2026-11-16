@@ -562,9 +562,24 @@ namespace
             }
             const uint32_t current = fn<GetEquipped>(g_getEquipped)(hero, nullptr, slot);
             // The weapon hands (12, 13) go with the taskbar's weapon sets: an empty one is the player's choice.
-            if (!current && (slot == 12 || slot == 13))
+            // But a shield into the free hand 12 beside a one-handed weapon (the player, 2026-11-16: «sí, que lo
+            // ponga»: every class may carry one, the agent only kept the shield a hero started with).
+            const bool shieldBeside = slot == 12 && !current && !w.weapon && handClass(id) == 0 &&
+                                      handClass(fn<GetEquipped>(g_getEquipped)(hero, nullptr, 13)) == 3;
+            if (!current && (slot == 12 || slot == 13) && !shieldBeside)
             {
                 continue;
+            }
+            if (shieldBeside)
+            {
+                // The game's own test on the slot in use, as a player's drop (canDrop: 1 free, 2 displaces).
+                const uint8_t* entry = entryOf(static_cast<int>(hero->id));
+                const uint32_t inUse = entry ? *reinterpret_cast<const uint16_t*>(entry + 0xD58) : 0xFFFFu;
+                const int may = inUse < 5 ? canDrop(inUse, 0, id) : 0;
+                if (may != 1 && may != 2)
+                {
+                    continue;
+                }
             }
             const bool handSlot = slot == 12 || slot == 13;
             const bool currentOwn = !handSlot && current && ownClassOnly(hero, current);
