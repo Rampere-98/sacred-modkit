@@ -2080,7 +2080,7 @@ namespace
                     return;
                 }
                 const int kind = slotElement(id), style = styleOf(id);
-                if (kind < 0 || style < 0 || (relax < 2 && styles[style]) || (relax < 1 && elements[kind]))
+                if (kind < 0 || style < 0 || (relax < 1 && styles[style]) || (relax < 2 && elements[kind]))
                 {
                     return;
                 }
@@ -2112,7 +2112,7 @@ namespace
         std::string repeats;
         bool takenStyles[5] = {}, takenElements[5] = {};
         // An empty slot never left so while the backpack holds a weapon the hero can use (the player, 2026-11-16 22:40:
-        // «oblígales a que tengan las armas en las ranuras»): with nothing distinct, one whose element, then whose
+        // «oblígales a que tengan las armas en las ranuras»): with nothing distinct, one whose style, then (only
         // style, repeats another slot's. A slot given back for a repeat only for a distinct one; a common weapon for any of the class's own.
         for (int relax = 0; relax <= 2 && !best; ++relax)
         {
@@ -2136,7 +2136,7 @@ namespace
                     if (relax > 0)
                     {
                         LOG("Gear: weapon slot {} empty and nothing distinct: {:x} put in all the same ({} repeated)",
-                            t.slot + 1, id, relax == 1 ? "its element" : "its style");
+                            t.slot + 1, id, relax == 1 ? "its style" : "its element, until one of an element no other slot has");
                     }
                     break;
                 }
