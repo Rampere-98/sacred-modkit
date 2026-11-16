@@ -161,11 +161,53 @@ namespace
         const Block& b = g_blocks[code];
         ++g_inflated;
         std::vector<uint8_t> packed(b.size);
-        std::vector<uint8_t> raw(kBlockSize);
-        uLongf rawLen = static_cast<uLongf>(raw.size());
+        // Only the tiles are wanted (+0x20, 64x64 of 0x20 bytes): inflated as far as them and no further. 361 of the
+        // 6050 sectors inflate past kBlockSize (to 492348 bytes, sector 64,39: towns and castles carry more after the
+        // tiles), and uncompress() into a buffer of kBlockSize gave them up with Z_BUF_ERROR (-5; the coordinator,
+        // 2026-11-16 21:40: 46,40 on A2, 24,38 on A3, 54,55 on A4, ...), their tiles never known from the files.
+        constexpr size_t kWanted = kTilesAt + kSectorTiles * kSectorTiles * kTileSize;
+        std::vector<uint8_t> raw(kWanted);
         const bool read = readAt(g_wld, b.offset, packed.data(), b.size);
-        const int z = read ? uncompress(raw.data(), &rawLen, packed.data(), static_cast<uLong>(packed.size())) : Z_OK;
-        if (!read || z != Z_OK || rawLen < kTilesAt + kSectorTiles * kSectorTiles * kTileSize)
+        int z = Z_OK;
+        uLong rawLen = 0;
+        bool more = false;  // the block goes on past the tiles
+        uLong fullLen = 0;  // its whole inflated size, worked out for the first ones told
+        static int s_larger = 0;
+        if (read)
+        {
+            z_stream zs{};
+            zs.next_in = packed.data();
+            zs.avail_in = static_cast<uInt>(packed.size());
+            zs.next_out = raw.data();
+            zs.avail_out = static_cast<uInt>(raw.size());
+            z = inflateInit(&zs);
+            if (z == Z_OK)
+            {
+                z = inflate(&zs, Z_FINISH);
+                rawLen = zs.total_out;
+                // The output full before the stream's end: Z_BUF_ERROR (or Z_OK) with the tiles all there.
+                more = z != Z_STREAM_END && zs.avail_out == 0;
+                if (z == Z_STREAM_END || more)
+                {
+                    z = Z_OK;
+                }
+                if (more && s_larger < 20)
+                {
+                    // The rest inflated into a small scratch, only to tell the block's real size.
+                    std::array<uint8_t, 0x4000> scratch{};
+                    int r = Z_OK;
+                    do
+                    {
+                        zs.next_out = scratch.data();
+                        zs.avail_out = static_cast<uInt>(scratch.size());
+                        r = inflate(&zs, Z_NO_FLUSH);
+                    } while (r == Z_OK);
+                    fullLen = zs.total_out;
+                }
+                inflateEnd(&zs);
+            }
+        }
+        if (!read || z != Z_OK || rawLen < kWanted)
         {
             g_slotOf[code] = kUnreadable;
             if (++g_unreadable <= 40)
@@ -177,6 +219,11 @@ namespace
                     b.offset, b.size);
             }
             return nullptr;
+        }
+        if (more && ++s_larger <= 20)
+        {
+            LOG("World tiles: sector {},{} inflates to {} bytes, more than the {} of its tiles (block of {} bytes): the "
+                "tiles read, the rest left", code % kGrid, code / kGrid, fullLen, kWanted, b.size);
         }
         int victim = 0;
         for (int i = 1; i < kCacheSlots; ++i)
