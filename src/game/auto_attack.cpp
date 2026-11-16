@@ -4103,10 +4103,12 @@ namespace
                      Lore::kindOf(g.titleKey, g.objectiveKey) == Lore::QuestKind::Escort))
                 {
                     g.tier = 2;
-                    static int32_t s_told = 0;
-                    if (s_told != g.number)
+                    // Once a quest each run (two escorts open at once flipped a single «told», 2026-11-17: A5 1096
+                    // lines in 3 min, 202 and 15044).
+                    static std::vector<int32_t> s_told;
+                    if (std::find(s_told.begin(), s_told.end(), g.number) == s_told.end())
                     {
-                        s_told = g.number;
+                        s_told.push_back(g.number);
                         LOG("AutoAttack: quest {} is an escort: first of all, until done", g.number);
                     }
                 }
