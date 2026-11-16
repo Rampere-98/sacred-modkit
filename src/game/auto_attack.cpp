@@ -3869,6 +3869,28 @@ namespace
             // Richfield R06NQ02 breaks Magical Thistle R12NQ02; Collect Orc Rings DQ_10259 spoils Stolen Iron Bars
             // DQ_15015) is an ordinary one once that other is done (the quests' session, 2026-11-16: 402 open in 7
             // copies, picked by none in a day, though 702 was done in 6 of them).
+            // An escort once taken is done at once, before anything else (Manolito, block BQ: 302 «Cattle
+            // Thieves», its farmer follows the hero from the taking; left for another goal she follows him through
+            // the wolves by her farm and dies, the quest failed though the hero is 900 tiles off: 302 failed in the
+            // saves of A1, A2, A5, A6 and A8, done in A3 and A7. A4, 2026-11-16 23:17: Adelina, 201, spoken to and
+            // left a second later for 203, 196 tiles off; failed 2.5 min on). By the objective's words, and those
+            // whose first step reads otherwise («Encuentra a Adelina»).
+            static constexpr int32_t kEscorts[] = {201, 302};
+            for (QuestGoal& g : g_questBook)
+            {
+                if (g.kind == GoalKind::Journal && !g.main && g.tier < 2 &&
+                    (std::find(std::begin(kEscorts), std::end(kEscorts), g.number) != std::end(kEscorts) ||
+                     Lore::kindOf(g.titleKey, g.objectiveKey) == Lore::QuestKind::Escort))
+                {
+                    g.tier = 2;
+                    static int32_t s_told = 0;
+                    if (s_told != g.number)
+                    {
+                        s_told = g.number;
+                        LOG("AutoAttack: quest {} is an escort: first of all, until done", g.number);
+                    }
+                }
+            }
             static constexpr std::pair<int32_t, int32_t> kAfter[] = {{rq(6, 2), rq(12, 2)}, {10259, 15015}};
             for (QuestGoal& g : g_questBook)
             {

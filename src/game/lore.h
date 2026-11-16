@@ -25,6 +25,8 @@ namespace Lore
     // The quest the agent goes for: read once per quest (title, objective), its kind told and kept.
     QuestKind readQuest(uint32_t titleKey, uint32_t objectiveKey);
     QuestKind questKind();
+    // Any journal quest's kind by its title and objective, with no log nor change to the one followed (cached).
+    QuestKind kindOf(uint32_t titleKey, uint32_t objectiveKey);
     // How many the objective asks for ("Mata a diez...", "Kill 3..."); 0 if it says none.
     int questCount();
 

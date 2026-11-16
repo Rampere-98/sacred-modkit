@@ -9,6 +9,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 using namespace Sacred;
 
@@ -196,6 +197,25 @@ Lore::QuestKind Lore::readQuest(uint32_t titleKey, uint32_t objectiveKey)
     LOG("Lore: {}", g_questLine);
     keep(g_questLine);
     return g_kind;
+}
+
+Lore::QuestKind Lore::kindOf(uint32_t titleKey, uint32_t objectiveKey)
+{
+    static std::unordered_map<uint64_t, QuestKind> s_kinds;
+    const uint64_t key = (static_cast<uint64_t>(titleKey) << 32) | objectiveKey;
+    const std::lock_guard lock(g_lock);
+    if (const auto known = s_kinds.find(key); known != s_kinds.end())
+    {
+        return known->second;
+    }
+    if (s_kinds.size() > 1024)
+    {
+        s_kinds.clear();
+    }
+    const std::wstring title = text(titleKey), objective = text(objectiveKey);
+    const QuestKind kind = classify(objective.empty() ? title : objective);
+    s_kinds.emplace(key, kind);
+    return kind;
 }
 
 Lore::QuestKind Lore::questKind()
