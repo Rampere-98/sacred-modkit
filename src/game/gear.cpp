@@ -527,6 +527,9 @@ namespace
     // The slot `id` would best go to, and what is there now; -1 if it is better nowhere. Of the rings and amulets,
     // the weakest worn.
     bool ownClassOnly(cCreature* hero, uint32_t id);
+    int slotsOpen(const cCreature* hero);
+    int slotElement(uint32_t id);
+    uint32_t slotWeapon(const uint8_t* pack, int slot);
 
     int bestSlot(cCreature* hero, uint32_t id, float margin, uint32_t* replaced = nullptr, bool* fits = nullptr)
     {
@@ -601,6 +604,24 @@ namespace
                 if (other && (twoHanded(id) || twoHanded(other)))
                 {
                     continue;
+                }
+                // Never an element another weapon slot holds (the player, 2026-11-16 23:00: «nunca armas del mismo
+                // elemento en ranuras diferentes»).
+                const uint8_t* pack = entryOf(static_cast<int>(hero->id));
+                const int element = slotElement(id);
+                if (pack && element >= 0)
+                {
+                    const int inUse = *reinterpret_cast<const uint16_t*>(pack + 0xD58);   // kActiveSlot
+                    bool taken = false;
+                    for (int s = 0, open = slotsOpen(hero); s < open && !taken; ++s)
+                    {
+                        const uint32_t w = s == inUse ? 0 : slotWeapon(pack, s);
+                        taken = w && w != id && slotElement(w) == element;
+                    }
+                    if (taken)
+                    {
+                        continue;
+                    }
                 }
             }
             const Worth now = current ? worth(current) : Worth{};
@@ -2011,6 +2032,35 @@ namespace
             std::string repeats;
             bool ownOnly = false;   // filled again only for a weapon of the hero's class alone
         };
+        // Never one element in two weapon slots (the player, 2026-11-16 23:00: «nunca armas del mismo elemento en
+        // ranuras diferentes»): of two, the weaker one not in use back to the backpack, even with nothing for it.
+        for (int a = 0; a < open; ++a)
+        {
+            for (int b = a + 1; b < open; ++b)
+            {
+                const uint32_t wa = slotWeapon(pack, a), wb = slotWeapon(pack, b);
+                if (!wa || !wb || slotElement(wa) < 0 || slotElement(wa) != slotElement(wb))
+                {
+                    continue;
+                }
+                int weak = worth(wa).score < worth(wb).score ? a : b;
+                weak = weak == active ? (weak == a ? b : a) : weak;
+                if (weak == active || (!agentCopy() && !g_agentPut.count(slotWeapon(pack, weak))))
+                {
+                    continue;
+                }
+                if (!Act::allowed(Act::Kind::WeaponSlots, "give back a weapon whose element another weapon slot has"))
+                {
+                    return false;
+                }
+                if (giveBack(pack, weak))
+                {
+                    LOG("Gear: weapon slot {} repeats slot {}'s element ({}): its weapons back to the backpack",
+                        weak + 1, (weak == a ? b : a) + 1, elementName(slotElement(wa)));
+                    return true;
+                }
+            }
+        }
         std::vector<Target> targets;
         for (int slot = 0; slot < open; ++slot)
         {
@@ -2081,6 +2131,12 @@ namespace
                 }
                 const int kind = slotElement(id), style = styleOf(id);
                 if (kind < 0 || style < 0 || (relax < 1 && styles[style]) || elements[kind])
+                {
+                    return;
+                }
+                // The relaxed fill only with a weapon not of the hero's class alone (the player, 2026-11-16 23:00:
+                // «el relleno solo sirve para armas que no son exclusivas del personaje»).
+                if (relax > 0 && ownClassOnly(hero, id))
                 {
                     return;
                 }
