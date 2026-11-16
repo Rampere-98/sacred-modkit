@@ -6221,6 +6221,12 @@ namespace
             }
             const Merchant* best = nullptr;
             double bestDistance = 0.0, bestRank = 0.0;
+            // The merchant being gone to, kept: the game's list holds only the creatures it has loaded about the hero, and
+            // the one gone for leaves it as the hero walks (the stuck solver, 2026-11-16, A2 and A7: «off to merchant» 348,
+            // 1f67, 1cf, 1f70, 1a1f, 1fbe, 1cf, 1cca in 9 minutes, 128-310 tiles each, the backpack never emptied; the
+            // trip began again at each change).
+            static Merchant s_sticky{};
+            static DWORD s_stickySince = 0;
             for (const Merchant& m : g_merchants)
             {
                 const auto failed = g_shopFailedAt.find(m.id);
@@ -6255,6 +6261,31 @@ namespace
                     bestRank = rank;
                 }
             }
+            // Kept to the end: the merchant gone for stays the one unless another is under 40 % of its walk, until 10 min
+            // after the choice, a failure or the shop opening (a fight cuts nothing: the roam comes back to it).
+            if (g_shopId)
+            {
+                for (const Merchant& m : g_merchants)
+                {
+                    if (m.id == g_shopId)
+                    {
+                        s_sticky = m;       // its place as the game gives it now
+                    }
+                }
+                const auto failedMine = g_shopFailedAt.find(g_shopId);
+                if (s_sticky.id == g_shopId && now - s_stickySince < 600000 &&
+                    !(failedMine != g_shopFailedAt.end() && now - failedMine->second < 300000) &&
+                    !(g_shopUselessAt.count(g_shopId) && now - g_shopUselessAt[g_shopId] < 1800000))
+                {
+                    const double walkMine = wayLength(self->x, self->y, s_sticky.x, s_sticky.y);
+                    if (!(s_sticky.layer != layer && walkMine > 30.0 * kTileSize) &&
+                        (!best || best->id == g_shopId || bestDistance > walkMine * 0.4))
+                    {
+                        best = &s_sticky;
+                        bestDistance = walkMine;
+                    }
+                }
+            }
             if (best)
             {
                 g_questTravel = true;
@@ -6263,6 +6294,8 @@ namespace
                 {
                     LOG("AutoAttack: backpack full, off to merchant {:x} ({:.0f} tiles)", best->id, bestDistance / kTileSize);
                     g_shopId = best->id;
+                    s_sticky = *best;
+                    s_stickySince = now;
                     g_shopTries = 0;
                     g_shopClickAt = 0;
                 }
@@ -6384,6 +6417,12 @@ namespace
                         return;
                     }
                 }
+            }
+            // Only nearly full, potions in stock and no merchant within reach: no trip for 10 min (the trip's want would hold
+            // back the seek meanwhile).
+            if (!Gear::packFull() && !(Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2))
+            {
+                Gear::noTripFor(600000);
             }
             if (!g_shopTold)
             {

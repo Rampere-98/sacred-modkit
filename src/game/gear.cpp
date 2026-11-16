@@ -1289,6 +1289,7 @@ namespace
     // A merchant trip (the backpack full, [Gear] Trips): the agent walks the hero there and opens the shop; meanwhile
     // selling is on whatever the menu says, and once nothing more is sold or bought the shop is closed.
     std::atomic<bool> g_full{false};
+    std::atomic<bool> g_nearFull{false};    // under 15 % of the backpack's squares free: a trip before it is full
     std::atomic<bool> g_tripShop{false};    // the shop open now is the trip's
     std::atomic<bool> g_tripDone{false};    // the trip's shop has nothing more: to be closed
     std::atomic<bool> g_tripLeftFull{false};    // the trip over with the backpack still full
@@ -1303,6 +1304,20 @@ namespace
     {
         uint16_t free = 0;
         return !fn<FindFree>(g_findFree)(pack, nullptr, 2, 2, &free, 0);
+    }
+
+    // Under 15 % of the squares free (the player, 2026-11-16: «muchos objetos se están dejando en el suelo [...] por falta
+    // de espacio»): the trip to the merchant goes before the backpack is full, not after the loot is left lying.
+    bool packNearlyFull(uint8_t* pack)
+    {
+        const int w = *reinterpret_cast<uint16_t*>(pack + 0x115C), h = *reinterpret_cast<uint16_t*>(pack + 0x115E);
+        if (w <= 0 || h <= 0 || w * h > 0x100)
+        {
+            return false;
+        }
+        int used = 0;
+        eachItem(pack, [&](uint32_t, int, int iw, int ih) { used += iw * ih; });
+        return (w * h - used) * 100 < w * h * 15;
     }
 
     // An item left in the cursor's hand (seen live, 2026-11-09: a healing potion picked up while the inventory was
@@ -4174,6 +4189,7 @@ namespace
                 g_slotsDue = g_calm && !shop && g_settings.weaponSlots;
             }
             g_full = packFull(pack);
+            g_nearFull = packNearlyFull(pack);
             g_healing = countHealing(pack);
             g_idleWorks = acted ? 0 : g_idleWorks + 1;
             if (trip && g_idleWorks >= 2)
@@ -4196,6 +4212,12 @@ namespace
                 {
                     g_tripLeftFull = true;
                     g_noTripUntil = GetTickCount() + 30000;
+                }
+                else if (g_nearFull)
+                {
+                    // Not full but nearly, after a trip that sold what it could: what is left is kept (runes, gems, the
+                    // potions): not again for 20 min.
+                    g_noTripUntil = GetTickCount() + 1200000;
                 }
                 else if (g_healing <= std::max(2, wantHealing() / 2 - 1))   // no potion sold there (or gold short): not straight back
                 {
@@ -4396,6 +4418,11 @@ int Gear::grade(uint32_t id, bool equipment)
     return g_ready ? gradeOf(id, equipment) : -1;
 }
 
+void Gear::noTripFor(unsigned long ms)
+{
+    g_noTripUntil = GetTickCount() + static_cast<DWORD>(ms);
+}
+
 bool Gear::packFull()
 {
     return g_ready && g_full;
@@ -4452,7 +4479,7 @@ bool Gear::wantsShop()
     // holds back the seek and the craftsmen's trips (wantsShop), as it did at 2.
     const bool potions = g_settings.buy && g_healing >= 0 && (g_healing <= std::max(2, wantHealing() / 2 - 1) || askedNow) &&
                          gold >= 200;
-    return g_ready && g_settings.trips && (g_full || potions) && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
+    return g_ready && g_settings.trips && (g_full || g_nearFull || potions) && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
            (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
 }
 

@@ -43,6 +43,8 @@ namespace Gear
     int healingLeft();
     // The backpack has no room left (whatever the trips setting): the agent leaves items lying.
     bool packFull();
+    // No trip to a merchant for `ms` (the auto attack: no merchant within reach for a backpack only nearly full).
+    void noTripFor(unsigned long ms);
     // The agent opened a shop for the trip: sold to, upgrades put on (whatever the menu says), then done.
     void tripOpened();
     // The trip's shop has nothing more (once): the agent closes it.
