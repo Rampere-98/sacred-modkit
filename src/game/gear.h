@@ -15,6 +15,16 @@ namespace Gear
 
     // Merchant trips ([Gear] Trips): the backpack is full, the agent should take the hero to a merchant.
     bool wantsShop();
+    // The merchant wanted for the backpack or the potions alone (not the town stop's).
+    bool wantsShopOwn();
+    // The town stop before a change of region (the player, 2026-11-16): called by the auto attack each pass with the
+    // region of the next goal when it is not the hero's own (-1 otherwise); the merchant, then the storage chest.
+    void prepareFor(int region);
+    // The town stop's merchant is all the merchant trip is for (none in reach: prepShopSkip drops it).
+    bool prepShopOnly();
+    void prepShopSkip(const char* why);
+    // The town stop's storage visit still to do: the storage chest sought farther (120 tiles).
+    bool prepStorage();
     // The auto attack wants healing potions before more fights (no fight to take, under half the class's stock): a
     // merchant trip is wanted for them until `until` (tick), as with 2 left.
     void askPotions(unsigned long until);

@@ -783,13 +783,15 @@ namespace
 
     // The future upgrades worth keeping: of the class (canUse mode 1) but not wearable now (mode 0), their level
     // within kFutureLevels of the hero's, better than what is worn by the score alone (the class's own first is for
-    // pieces wearable now), and only the best of them for each body slot.
-    std::unordered_set<uint32_t> futureKeep(cCreature* hero, uint8_t* pack)
+    // pieces wearable now), and only the best of them for each body slot, the storage's counted too. Never a weapon:
+    // one the hero cannot wear yet is sold (the player, 2026-11-16: «las armas no van al almacén, solo armaduras y
+    // varios»).
+    std::unordered_set<uint32_t> futureKeep(cCreature* hero, uint8_t* pack, uint8_t* store = nullptr)
     {
         std::unordered_map<int, std::pair<uint32_t, float>> best;
         const int level = heroLevelOf(hero);
-        eachItem(pack, [&](uint32_t id, int, int, int) {
-            if ((flagsOf(id) & kQuestItem) || !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) ||
+        const auto look = [&](uint32_t id, int, int, int) {
+            if ((flagsOf(id) & kQuestItem) || worth(id).weapon || !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) ||
                 fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
             {
                 return;
@@ -811,7 +813,12 @@ namespace
             {
                 at->second = {id, score};
             }
-        });
+        };
+        eachItem(pack, look);
+        if (store)
+        {
+            eachItem(store, look);
+        }
         std::unordered_set<uint32_t> keep;
         for (const auto& [slot, piece] : best)
         {
@@ -831,7 +838,7 @@ namespace
         g_sellSeen = 0;
         g_sellPotions = 0;
         g_keptNow = g_keptFuture = 0;
-        const std::unordered_set<uint32_t> future = futureKeep(hero, pack);
+        const std::unordered_set<uint32_t> future = futureKeep(hero, pack, entryOf(0x11));    // 0x11: the storage
         // With gold to spare (over 500 000: the laboratory's endless gold) the healing potions beyond twice the stock are
         // sold too. The runes are never sold (the player, 2026-11-09): the combo master takes them.
         const bool rich = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + kGold) >= 500000;
@@ -3660,6 +3667,14 @@ namespace
     constexpr uintptr_t kMoveItem = 0x5DECC0;
 
     std::atomic<bool> g_wantStore{false}, g_wantTake{false};
+    // The town stop before a change of region (the player, 2026-11-16: «la intención es que, antes de cambiar de zona,
+    // se prepare antes de ir»): once for each region the next goal is in, the merchant first (what is of no use sold,
+    // the healing potions bought up to the stock), then the storage chest (the pieces worth keeping in, the ones for
+    // that region out), then off. Given up after 15 min. Nothing to repair: the game's items do not wear out.
+    std::atomic<int> g_prepRegion{-1};
+    std::atomic<bool> g_prepShop{false}, g_prepStore{false};
+    DWORD g_prepAt = 0, g_prepOffAt = 0, g_tripDoneAt = 0;
+    int g_prepDoneRegion = -1;
     // The storage full at the last put (no piece kept from the merchant meanwhile; the reviewer, S2): 0 not.
     DWORD g_storageFullAt = 0;
     // This visit's moves: what went in does not come out, nor the other way (the reviewer, S1).
@@ -3754,6 +3769,32 @@ namespace
                 keep.insert(all[i].id);
             }
         }
+        // And what else is worth keeping, in the storage and not the backpack (the player, 2026-11-16: «si guarda
+        // armaduras, pues que lo haga en el almacén [...] apenas lo que vale la pena guardar»): the future upgrade
+        // of each body slot (near the hero's level), and the pieces of a set he wears not put on. Never a weapon.
+        for (const uint32_t id : futureKeep(hero, pack, store))
+        {
+            keep.insert(id);
+        }
+        const std::unordered_map<int, int> worn = setsWorn(hero);
+        const auto setPiece = [&](uint32_t id, int, int, int) {
+            const Worth w = worth(id);
+            if (w.weapon || w.set < 0 || !worn.count(w.set) || (flagsOf(id) & kQuestItem) ||
+                !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) || bestSlot(hero, id, 0.05f) >= 0)
+            {
+                return;
+            }
+            if (fn<CanUse>(g_canUse)(hero, nullptr, id, 0) ||
+                (levelOf(id) >= 0 && levelOf(id) <= heroLevelOf(hero) + kFutureLevels))
+            {
+                keep.insert(id);
+            }
+        };
+        eachItem(pack, setPiece);
+        if (store)
+        {
+            eachItem(store, setPiece);
+        }
         return keep;
     }
 
@@ -3833,8 +3874,16 @@ namespace
                 });
             }
             const bool fresh = g_storageKeep.size() > g_storageKeptBefore;
-            g_wantStore = put && (!g_storageVisitAt || now - g_storageVisitAt > 600000 || fresh);
-            g_wantTake = take && (!g_storageVisitAt || now - g_storageVisitAt > 600000);
+            const bool prep = g_prepStore.load();    // the town stop: the chest now, whatever the last visit
+            g_wantStore = put && (prep || !g_storageVisitAt || now - g_storageVisitAt > 600000 || fresh);
+            g_wantTake = take && (prep || !g_storageVisitAt || now - g_storageVisitAt > 600000);
+            // Nothing for the chest (once the equipping knows the region: zoneLook waits a minute on it).
+            if (prep && !put && !take && !g_storageId.load() &&
+                (g_zoneRegion.load() == g_prepRegion.load() || now - g_prepAt > 90000))
+            {
+                g_prepStore = false;
+                LOG("Gear: town stop for region {}: nothing to put in the storage chest or take out", g_prepRegion.load());
+            }
         }
         const uint32_t used = g_storageId.load();
         if (!used)
@@ -3861,6 +3910,10 @@ namespace
                 g_wantStore = false;
                 g_wantTake = false;
                 g_storageKeptBefore = g_storageKeep.size();
+                if (g_prepStore.exchange(false))
+                {
+                    LOG("Gear: town stop for region {}: the storage chest done", g_prepRegion.load());
+                }
             }
             return false;
         }
@@ -4288,6 +4341,11 @@ namespace
                 }
                 g_tripDone = true;
                 g_sortWanted = true;
+                g_tripDoneAt = GetTickCount();
+                if (g_prepShop.exchange(false))
+                {
+                    LOG("Gear: town stop for region {}: the merchant done", g_prepRegion.load());
+                }
                 // Still full: this merchant does not deal in what the hero carries (a weapon shop and a backpack of
                 // armour; the player, 2026-11-14: «tienen acúmulo de mierda»). Told to the agent, who leaves this
                 // merchant for half an hour and goes to another at once; before, no trip at all for 10 minutes.
@@ -4547,7 +4605,85 @@ bool Gear::wantsRuneSwap()
            (g_foreignRunes >= 5 || (g_foreignRunes >= 3 && (!g_lastSwapOverAt || GetTickCount() - g_lastSwapOverAt > 600000)));
 }
 
+namespace
+{
+    bool prepShopWanted()
+    {
+        return g_ready && g_prepShop.load() && g_settings.trips && (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
+    }
+}
+
+bool Gear::prepShopOnly()
+{
+    return prepShopWanted() && !Gear::wantsShopOwn();
+}
+
+void Gear::prepShopSkip(const char* why)
+{
+    if (g_prepShop.exchange(false))
+    {
+        LOG("Gear: town stop for region {}: no merchant ({})", g_prepRegion.load(), why);
+    }
+}
+
+bool Gear::prepStorage()
+{
+    return g_prepStore.load() && Act::may(Act::Kind::Storage);
+}
+
+void Gear::prepareFor(int region)
+{
+    const DWORD now = GetTickCount();
+    const int at = g_prepRegion.load();
+    if (at >= 0)
+    {
+        if (!g_prepShop.load() && !g_prepStore.load())
+        {
+            LOG("Gear: town stop for region {} done: off", at);
+        }
+        else if (now - g_prepAt > 900000)
+        {
+            LOG("Gear: town stop for region {} given up after 15 min (merchant {}, storage {}): off", at,
+                g_prepShop.load() ? "not done" : "done", g_prepStore.load() ? "not done" : "done");
+        }
+        else if (region < 0 && g_prepOffAt && now - g_prepOffAt > 30000)
+        {
+            LOG("Gear: town stop for region {} dropped: the next goal is no longer in another region", at);
+        }
+        else
+        {
+            g_prepOffAt = region < 0 ? (g_prepOffAt ? g_prepOffAt : now) : 0;
+            return;
+        }
+        g_prepShop = false;
+        g_prepStore = false;
+        g_prepDoneRegion = at;
+        g_prepRegion = -1;
+        g_prepOffAt = 0;
+        return;
+    }
+    if (!g_ready || region < 0 || region == g_prepDoneRegion)
+    {
+        return;
+    }
+    g_prepAt = now;
+    g_prepOffAt = 0;
+    // A merchant visited in the last 5 min counts as this stop's.
+    g_prepShop = g_settings.trips && (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy)) &&
+                 !(g_tripDoneAt && now - g_tripDoneAt < 300000);
+    g_prepStore = Act::may(Act::Kind::Storage);
+    g_prepRegion = region;
+    LOG("Gear: the next goal is in region {}: a town stop first (merchant {}, storage chest {}), then off", region,
+        g_prepShop.load() ? "to visit" : "not (just visited, or Sell and Buy off)",
+        g_prepStore.load() ? "to visit" : "not (Storage off)");
+}
+
 bool Gear::wantsShop()
+{
+    return Gear::wantsShopOwn() || prepShopWanted();
+}
+
+bool Gear::wantsShopOwn()
 {
     const DWORD quiet = g_noTripUntil;
     // A full backpack, or no healing potion left with gold to buy some (and buying on).
