@@ -6117,6 +6117,10 @@ namespace
             const bool goal = g_questX || g_questY;
             g_destRegion = sectorRegion(world, static_cast<int>((goal ? g_questX : self->x) / kTileSize),
                                         static_cast<int>((goal ? g_questY : self->y) / kTileSize));
+            // The next goal in another region: a town stop first (Gear: the merchant, then the storage chest).
+            const int here = sectorRegion(world, static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize));
+            const int dest = g_destRegion.load();
+            Gear::prepareFor(goal && here >= 0 && dest >= 0 && dest != here ? dest : -1);
         }
         // The storage chest (the player, 2026-11-16: «consciencia del almacén [...] deberá contener equipamiento con
         // resistencia a la zona donde van»): pieces to keep for other zones, or one to take out for where the hero is
@@ -6142,10 +6146,12 @@ namespace
             }
             g_storage = pick;
         }
+        // 40 tiles; the town stop's visit 120 (the chest of the town the hero is in or near).
+        const double storageReach = (Gear::prepStorage() ? 120.0 : 40.0) * kTileSize;
         g_storageNear = g_storage.id && g_storage.layer == layer &&
                         (!s_storageFailedAt || now - s_storageFailedAt > 600000) &&
                         std::hypot(static_cast<double>(g_storage.x - self->x), static_cast<double>(g_storage.y - self->y)) <=
-                            40.0 * kTileSize;
+                            storageReach;
         // The hero stays at the chest while the visit's work goes on (A4, 2026-11-16 20:37: a piece taken out, then
         // off to the combo master with the chest's window half done: it closed behind him, the chest still marked in
         // use). Gear ends the visit (closed, or 20 s with the window gone).
@@ -6162,7 +6168,7 @@ namespace
             Act::may(Act::Kind::Storage) && (!s_storageFailedAt || now - s_storageFailedAt > 600000))
         {
             const double d = std::hypot(static_cast<double>(g_storage.x - self->x), static_cast<double>(g_storage.y - self->y));
-            if (d <= 40.0 * kTileSize)
+            if (d <= storageReach)
             {
                 setIntent(Intent::Shop, "pieces for the storage chest: to it");
                 if (d > 4.0 * kTileSize)
@@ -6338,6 +6344,13 @@ namespace
                     }
                 }
                 MapMemory::setRoute(true, best->x, best->y);
+                g_roamAt = 0;
+                return;
+            }
+            // Only the town stop's merchant and none in reach: the stop goes on without him (no long walk for it).
+            if (Gear::prepShopOnly())
+            {
+                Gear::prepShopSkip("none within reach");
                 g_roamAt = 0;
                 return;
             }
