@@ -19,7 +19,7 @@ namespace Gear
     bool wantsShopOwn();
     // The town stop before a change of region (the player, 2026-11-16): called by the auto attack each pass with the
     // region of the next goal when it is not the hero's own (-1 otherwise); the merchant, then the storage chest.
-    void prepareFor(int region);
+    void prepareFor(int region, int here);
     // The town stop's merchant is all the merchant trip is for (none in reach: prepShopSkip drops it).
     bool prepShopOnly();
     void prepShopSkip(const char* why);
