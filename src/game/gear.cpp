@@ -3316,8 +3316,8 @@ namespace
             using AutoSort = void(__fastcall*)(uint8_t* entry, void*, uint16_t mode);
             reinterpret_cast<AutoSort>(0x5DB6B0)(pack, nullptr, mode);
             const PackRoom after = packRoom(pack);
-            LOG("Gear: backpack sorted with the inventory's arrow (mode {}: {}): {} free cells, a 2x4 piece fits {} -> {}",
-                mode, mode ? "by rows" : "by columns", before.freeCells, before.fits2x4 ? "yes" : "no",
+            LOG("Gear: backpack sorted with the inventory's arrow (mode {}: {}): free cells {} -> {}, a 2x4 piece fits {} -> {}",
+                mode, mode ? "by rows" : "by columns", before.freeCells, after.freeCells, before.fits2x4 ? "yes" : "no",
                 after.fits2x4 ? "yes" : "no");
             (void)hero;
             g_sortState = g_sortOpened ? 3 : 0;
@@ -3325,20 +3325,26 @@ namespace
             g_sortTries = 0;
             return true;
         }
-        // Closing what the agent opened, as the player: its close (vt 9 onShow(0)), checked; the windows' own close
-        // (0x7325C0) after three.
+        // Closing what the agent opened, as the player: its key first (A4, 2026-11-16: three onShow(0) left it open),
+        // then its onShow(0), checked each time; the windows' own close (0x7325C0) after three.
         if (!window->visible())
         {
-            LOG("Gear: sorting: the inventory closed again");
+            LOG("Gear: sorting: the inventory closed again (try {}: {})", g_sortTries,
+                g_sortTries <= 1 ? "its key" : g_sortTries <= 3 ? "its onShow(0)" : "-");
             g_sortState = 0;
             return false;
         }
-        if (now - g_sortStateAt.load() < 500)
+        if (now - g_sortStateAt.load() < 800)
         {
             return true;
         }
         g_sortStateAt = now;
-        if (++g_sortTries <= 3)
+        if (++g_sortTries == 1)
+        {
+            Inject::key('I', true);
+            Inject::key('I', false);
+        }
+        else if (g_sortTries <= 3)
         {
             const auto* vt = *reinterpret_cast<const uintptr_t* const*>(window);
             reinterpret_cast<OnShow>(vt[9])(window, nullptr, 0);
