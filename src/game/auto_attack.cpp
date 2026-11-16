@@ -3964,8 +3964,16 @@ namespace
             std::vector<std::pair<double, const QuestGiver*>> nearest;
             for (const QuestGiver& q : kQuestGivers)
             {
+                // Not one the journal has (open, done or failed): a quest's variable is not always bits, 1 can be a
+                // step of one taken (Manolito, block BP: 901's is a counter, 1 = its cave entered).
                 const auto value = s_values.find(q.number);
-                if (value == s_values.end() || value->second != 1 ||
+                const bool inJournal =
+                    std::find(g_doneNumbers.begin(), g_doneNumbers.end(), q.number) != g_doneNumbers.end() ||
+                    std::find(g_failedNow.begin(), g_failedNow.end(), q.number) != g_failedNow.end() ||
+                    std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
+                        return o.kind == GoalKind::Journal && o.number == q.number;
+                    });
+                if (value == s_values.end() || value->second != 1 || inJournal ||
                     std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end())
                 {
                     continue;
