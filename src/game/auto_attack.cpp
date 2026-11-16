@@ -3607,10 +3607,13 @@ namespace
         bool blocked = false;
     };
 
-    // The quest's number (Manolito's block X, 2026-11-10): DQ_<n> is n, R<rr>NQ<qq> is 100 + 50*rr + qq.
+    // The quest's number: DQ_<n> is n; R<rr>NQ<qq> is 100*rr + qq, but region 1's are 150 + qq (the journal's own
+    // titles in every copy's logs, 2026-11-16: 151 «Ojos de lobo» R01NQ01, 302 «Ladrones de ganado» R03NQ02, 1002
+    // «Planes de la inquisición» R10NQ02, 1101 «Hábitos negros» R11aNQ01, 2401 R24NQ01; Manolito, block BN: the script's
+    // variable is named so). The 100 + 50*rr + qq of block X held only for regions 1 and 2.
     constexpr int32_t rq(int32_t region, int32_t quest)
     {
-        return 100 + 50 * region + quest;
+        return region == 1 ? 150 + quest : 100 * region + quest;
     }
     // From the quest reader's table (docs/QUESTS.md, 2026-11-10): 1 = do before it is lost or because it opens
     // something (the Book of Wisdom: rune swaps and the combo master), -1 = leave for last (the Riddle in the Desert,
@@ -3628,11 +3631,9 @@ namespace
         static constexpr int32_t kFirst[] = {15005, 15009, 15015, 15036, rq(1, 2), rq(2, 4), rq(3, 1), rq(4, 3),
                                              rq(5, 1), rq(5, 2), rq(7, 3), rq(9, 1), rq(12, 2), rq(13, 2), rq(13, 3),
                                              rq(14, 1), rq(17, 3), rq(18, 3), rq(22, 1), rq(24, 11), rq(25, 3),
-                                             // Whispers in the Wind (302): fails on its own a few minutes after it is
-                                             // taken with no deadline the agent can read (the quests' session,
-                                             // 2026-11-16: A5 19:35:17 and again 5 min after the load, the hero far
-                                             // off on the main quest; done only where the witch was seen at once).
-                                             302};
+                                             // Cattle Thieves (302, R03NQ02: its farmer follows the hero from the
+                                             // taking and dies if left; also an escort, tier 2).
+                                             rq(3, 2)};
         static constexpr int32_t kLast[] = {10259, 10260, rq(6, 2), rq(13, 1), rq(22, 3)};
         if (std::find(std::begin(kFirst), std::end(kFirst), number) != std::end(kFirst))
         {
@@ -4035,7 +4036,10 @@ namespace
         // Dreamer of Winters (1002, zone 40, docs/QUESTS.md): Valoria goes to the stone circle and dies there, the
         // quest failed 35-55 s after it was taken, heroes of level 16-24 (the quests' session, 2026-11-16: A2 16:03,
         // A3 21:02 and 21:38, A4 18:22). Neither followed nor taken: its giver's sign is left too.
-        static constexpr std::pair<int32_t, int> kMinLevel[] = {{1002, 35}};
+        // 1802 is the Dreamer of Winters (R18NQ02, zone 40). 1002 is the journal's R10NQ02 «Planes de la
+        // inquisición» (zone 8-18), held too: it failed 35-55 s after it was taken in A2, A3, A4 and A8, its cause not
+        // known yet (asked of Manolito, 2026-11-17).
+        static constexpr std::pair<int32_t, int> kMinLevel[] = {{rq(18, 2), 35}, {1002, 35}};
         const int heroLv = HeroProfile::current().level;
         auto tooLow = [heroLv](int32_t number) {
             for (const auto& [quest, least] : kMinLevel)
@@ -8288,12 +8292,13 @@ namespace
             }
             // By the journal's text, or by the quest's number (docs/QUESTS.md's table, the «matar» rows: the text's
             // kind is often not told, «sin saber»).
+            // The «matar» rows renumbered as the journal has them (rq() above, 2026-11-16; the old list was in block X's
+            // numbering: 1002 was R18NQ02's and is the journal's R10NQ02, «Planes de la inquisición», no kill). Not
+            // 1101 «Hábitos negros» (a rescue).
             static constexpr int32_t kKillQuests[] = {
-                151,   251,   253,   301,   303,   351,   352,   402,   453,   503,   552,   553,   601,   653,
-                // Not 1101: by its journal title (Lore, A2 17:37 and A8 21:13 on 16-11) it is «Hábitos negros», the
-                // farmer's daughter to be rescued (fails if she dies), not a kill.
-                701,   703,   751,   752,   802,   851,   1001,  1002,  1051,  1103,  1201,  1252,  1313,
-                1353,  10250, 10251, 10252, 10253, 10259, 15003, 15007, 15011, 15012, 15013, 15015, 15018, 15020,
+                151,   301,   303,   401,   403,   501,   502,   602,   703,   803,   902,   903,   1001,  1102,
+                1103,  1201,  1203,  1301,  1302,  1402,  1501,  1801,  1802,  1901,  2001,  2003,  2201,  2302,
+                2413,  2503,  6001,  10250, 10251, 10252, 10253, 10259, 15003, 15007, 15011, 15012, 15013, 15015, 15018, 15020,
                 15024, 15028, 15029, 15030, 15032, 15034, 15038, 15041, 15042, 15043, 15047, 15048, 15050, 15056,
                 15057, 15058, 15059, 15063, 15068, 15073, 15074, 15075, 15076, 15078, 15081, 15082};
             const bool killByNumber = !g_questBook.empty() && g_questBook.front().kind == GoalKind::Journal &&
