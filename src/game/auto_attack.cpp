@@ -3915,7 +3915,7 @@ namespace
                 scriptQuestValues(s_values);
             }
             g_giversLeft = 0;
-            std::vector<std::pair<double, const QuestGiver*>> near;
+            std::vector<std::pair<double, const QuestGiver*>> nearby;
             for (const QuestGiver& q : kQuestGivers)
             {
                 const auto value = s_values.find(q.number);
@@ -3952,17 +3952,17 @@ namespace
                 });
                 if (!signThere)
                 {
-                    near.emplace_back(off, &q);
+                    nearby.emplace_back(off, &q);
                 }
             }
-            std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (size_t i = 0; i < near.size() && i < 3; ++i)
+            std::sort(nearby.begin(), nearby.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (size_t i = 0; i < nearby.size() && i < 3; ++i)
             {
                 QuestGoal g{GoalKind::Giver};
-                g.x = static_cast<int32_t>((near[i].second->x + 0.5) * kTileSize);
-                g.y = static_cast<int32_t>((near[i].second->y + 0.5) * kTileSize);
+                g.x = static_cast<int32_t>((nearby[i].second->x + 0.5) * kTileSize);
+                g.y = static_cast<int32_t>((nearby[i].second->y + 0.5) * kTileSize);
                 g.radius = 6.0 * kTileSize;
-                g.number = near[i].second->number;
+                g.number = nearby[i].second->number;
                 g_questBook.push_back(g);
             }
             // Quests on offer with no giver known (the script's own list is longer than quest_givers.inc): they hold
