@@ -818,8 +818,34 @@ namespace
         return area >= 2 ? Art::Area : Art::Auto;
     }
 
+    // The Gladiator's Throwing Blades (0x3F5, 1013) throws the weapon in hand: with a throwing weapon (subclass 6,
+    // docs/ITEM_FUNCTIONS.md) as meant; with any other the weapon itself lands on the ground (A2, 2026-11-17 08:47-
+    // 08:54: a one-handed sword, a bow and a crossbow each thrown within 1.5 s of the art, the collector picked some up
+    // again, «white, below the grade asked for» left the rest lying: unarmed since 08:56). Only with a throwing weapon.
+    bool throwingInHand()
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        const cCreature* hero = objects ? objects->hero() : nullptr;
+        if (!hero)
+        {
+            return false;
+        }
+        const auto* equipment = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x1A4);
+        return HeroProfile::itemWeaponKind(equipment[13]) == 6 || HeroProfile::itemWeaponKind(equipment[12]) == 6;
+    }
+
     Art slotUse(int slot, uint32_t art)
     {
+        if (art == 0x3F5 && !throwingInHand())
+        {
+            static DWORD s_toldAt = 0;
+            if (!s_toldAt || GetTickCount() - s_toldAt > 600000)
+            {
+                s_toldAt = GetTickCount() | 1;
+                LOG("Tactics: Throwing Blades (3f5) left alone: no throwing weapon in hand (it would throw the weapon held)");
+            }
+            return Art::Off;
+        }
         const Art set = Config::tactics.slots[slot];
         if (set != Art::Auto)
         {

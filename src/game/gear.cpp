@@ -5291,7 +5291,8 @@ int Gear::slotWeapons(int slot)
     }
     const uint32_t a = slotItem(pack, slot, 0), b = slotItem(pack, slot, 1);
     return 1 | (slotRanged(pack, slot) ? 2 : 0) | ((a && twoHanded(a)) || (b && twoHanded(b)) ? 4 : 0) |
-           (slotWeapon(pack, slot) ? 8 : 0);
+           (slotWeapon(pack, slot) ? 8 : 0) |
+           (HeroProfile::itemWeaponKind(a) == 6 || HeroProfile::itemWeaponKind(b) == 6 ? 16 : 0);
 }
 
 int Gear::weaponSlotsOpen()

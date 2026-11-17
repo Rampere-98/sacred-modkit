@@ -97,7 +97,8 @@ namespace Gear
     // The agent sorting the backpack (its inventory window opened for it, up to 5 s): not a window left open.
     bool sorting();
     // Weapon slot `slot`'s weapons, for the arts that need a kind of weapon: bit 0 read, bit 1 a ranged weapon in it,
-    // bit 2 a two-handed one, bit 3 any weapon. 0: not known yet (the weapon slots not ready).
+    // bit 2 a two-handed one, bit 3 any weapon, bit 4 a throwing weapon (subclass 6). 0: not known yet (the weapon
+    // slots not ready).
     int slotWeapons(int slot);
     // The weapon slots the hero's level opens (1-5); 0 not known.
     int weaponSlotsOpen();
@@ -113,6 +114,12 @@ namespace Gear
         if (art == 1083 || art == 1084)
         {
             return (weapons & 4) != 0;
+        }
+        // Throwing Blades: it throws the weapon held, only with a throwing weapon (A2, 2026-11-17: sword, bow and
+        // crossbow thrown away).
+        if (art == 1013)
+        {
+            return (weapons & 16) != 0;
         }
         return true;
     }
