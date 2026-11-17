@@ -4282,6 +4282,197 @@ namespace
         return false;
     }
 
+    // ---- An escort lost: back for the one escorted (the stuck solver, 2026-11-17, A5: Escolta 202, Jacob to the West
+    // Bridge; the hero had left him behind, the journal still held the quest, and it walked to the bridge alone three
+    // times in 2 h; the owner wants every quest done) ------------------------------------------------------------------
+    // Per quest number: the escorted creature's type (the game's creature type, object +0x10) and where it was last seen
+    // following the hero. Learned from the companions list the first time an escorted one is in it; Jacob (Manolito, AGENT_
+    // ADDRESSES «Escolta»: type 0x29D, side 3) is known from the start. Kept beside the exe in SacredBild-escoltas.txt,
+    // «number type x y» (tiles).
+    struct EscortInfo
+    {
+        uint32_t type = 0;
+        int32_t x = 0, y = 0;       // world units; 0: not known
+    };
+    std::unordered_map<int32_t, EscortInfo> g_escortInfo = {{202, {0x29D, 0, 0}}};
+    bool g_escortRead = false, g_escortDirty = false;
+    DWORD g_escortWrittenAt = 0;
+    // The type looked for in the object list (scanQuestMarks), and the creature of it found, alive, on the surface.
+    uint32_t g_escortWantType = 0;
+    struct EscortSeen
+    {
+        uint32_t id = 0, type = 0;
+        int32_t x = 0, y = 0;
+        DWORD at = 0;
+    } g_escortSeen;
+
+    std::wstring escortPath()
+    {
+        const std::wstring path = giversPath();
+        return path.substr(0, path.find_last_of(L"\\/") + 1) + L"SacredBild-escoltas.txt";
+    }
+    void readEscorts()
+    {
+        g_escortRead = true;
+        FILE* f = _wfopen(escortPath().c_str(), L"r");
+        if (!f)
+        {
+            return;
+        }
+        char line[96];
+        while (std::fgets(line, sizeof(line), f))
+        {
+            int number = 0, x = 0, y = 0;
+            unsigned type = 0;
+            if (std::sscanf(line, "%d %u %d %d", &number, &type, &x, &y) >= 2 && number > 0 && type)
+            {
+                g_escortInfo[number] = {type, static_cast<int32_t>((x + 0.5) * kTileSize), static_cast<int32_t>((y + 0.5) * kTileSize)};
+                if (x <= 0 || y <= 0)
+                {
+                    g_escortInfo[number].x = g_escortInfo[number].y = 0;
+                }
+            }
+        }
+        std::fclose(f);
+    }
+    void writeEscorts(DWORD now)
+    {
+        g_escortDirty = false;
+        g_escortWrittenAt = now;
+        if (FILE* f = _wfopen(escortPath().c_str(), L"w"))
+        {
+            for (const auto& [number, info] : g_escortInfo)
+            {
+                std::fprintf(f, "%d %u %d %d\n", number, info.type, static_cast<int>(info.x / kTileSize),
+                             static_cast<int>(info.y / kTileSize));
+            }
+            std::fclose(f);
+        }
+    }
+
+    // Each pass of the world scan: the escorted one in the companions list, if any, teaches the quest's type (when not
+    // known) and where it was last with the hero.
+    void learnEscortee(DWORD now)
+    {
+        if (!g_escortRead)
+        {
+            readEscorts();
+        }
+        const int32_t number = g_followedNumber;
+        cObjectManager* objects = cObjectManager::instance();
+        const cCreature* hero = objects ? objects->hero() : nullptr;
+        if (number <= 0 || !hero || Lore::questKind() != Lore::QuestKind::Escort)
+        {
+            return;
+        }
+        const uint8_t* heroBytes = reinterpret_cast<const uint8_t*>(hero);
+        const auto begin = *reinterpret_cast<const uint8_t* const*>(heroBytes + 0x39C);
+        const auto end = *reinterpret_cast<const uint8_t* const*>(heroBytes + 0x3A0);
+        if (!begin || end < begin || ((end - begin) % 9) || (end - begin) / 9 > 8)
+        {
+            return;
+        }
+        for (const uint8_t* r = begin; r < end; r += 9)
+        {
+            const cCreature* c = objects->creature(*reinterpret_cast<const uint32_t*>(r));
+            if (!c || c->health <= 0 || r[8] != 0)
+            {
+                continue;
+            }
+            const uint32_t type = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(c) + 0x10);
+            EscortInfo& info = g_escortInfo[number];
+            if (!info.type)
+            {
+                info.type = type;
+                g_escortDirty = true;
+                LOG("AutoAttack: quest {}: the escorted one is of type {:x} (learned from the companions list)", number, type);
+            }
+            if (info.type == type &&
+                std::hypot(static_cast<double>(c->x - info.x), static_cast<double>(c->y - info.y)) > 8.0 * kTileSize)
+            {
+                info.x = c->x;
+                info.y = c->y;
+                g_escortDirty = true;
+            }
+            break;
+        }
+        if (g_escortDirty && now - g_escortWrittenAt > 30000)
+        {
+            writeEscorts(now);
+        }
+    }
+
+    // The escort's goal when the escorted one is not with the hero: where he is looked for (the last place he was with
+    // the hero, the quest's giver, one then the other every 4 min), and himself once seen: spoken to like any quest
+    // creature, which puts him in the companions list again and the escort code goes on from there. 15 min without
+    // finding him: the quest is skipped as any other that goes nowhere.
+    void escortFetch(int32_t number, DWORD now, int32_t& x, int32_t& y, double& radius, uint32_t& who)
+    {
+        static std::unordered_map<int32_t, DWORD> s_since;
+        if (!g_escortRead)
+        {
+            readEscorts();
+        }
+        if (escorteeFollows())
+        {
+            s_since.erase(number);
+            g_escortWantType = 0;
+            return;
+        }
+        const auto info = g_escortInfo.find(number);
+        if (info == g_escortInfo.end() || !info->second.type)
+        {
+            g_escortWantType = 0;
+            return;     // not known who: the destination, and the park rule at it
+        }
+        g_escortWantType = info->second.type;
+        DWORD& since = s_since[number];
+        if (!since)
+        {
+            since = now;
+            LOG("AutoAttack: quest {}: the escorted one (type {:x}) is not with the hero: looked for first", number,
+                info->second.type);
+        }
+        else if (now - since > 900000)
+        {
+            since = 0;
+            g_escortWantType = 0;
+            orderSkip(number, now, "its escorted one not found in 15 min");
+            return;
+        }
+        if (g_escortSeen.id && g_escortSeen.type == info->second.type && now - g_escortSeen.at < 6000)
+        {
+            x = g_escortSeen.x;
+            y = g_escortSeen.y;
+            radius = 3.0 * kTileSize;
+            who = g_escortSeen.id;
+            return;
+        }
+        std::vector<std::pair<int32_t, int32_t>> places;
+        if (info->second.x > 0 && info->second.y > 0)
+        {
+            places.emplace_back(info->second.x, info->second.y);
+        }
+        for (const QuestGiver& q : kQuestGivers)
+        {
+            if (q.number == number)
+            {
+                places.emplace_back(static_cast<int32_t>((q.x + 0.5) * kTileSize), static_cast<int32_t>((q.y + 0.5) * kTileSize));
+                break;
+            }
+        }
+        if (places.empty())
+        {
+            g_escortWantType = 0;
+            return;
+        }
+        const auto& place = places[((now - since) / 240000) % places.size()];
+        x = place.first;
+        y = place.second;
+        radius = 8.0 * kTileSize;
+        who = 0xFFFFFFFFu;
+    }
+
     // Called each step the agent goes for its quest goal (not while farming, paused or held): the goal picked, gone
     // for 20 min in all with no step of it done and never 10 tiles nearer than before, is skipped 30 min, then tried
     // again (its giver unreachable, a step the agent cannot do). Escorts and deadlines (tier 2) are never skipped so;
@@ -5206,6 +5397,12 @@ namespace
         {
             Lore::readQuest(to.titleKey, to.objectiveKey);     // the quest's title and objective read: its kind
         }
+        // An escort whose escorted one is not with the hero: back for him first.
+        g_escortWantType = 0;
+        if (to.kind == GoalKind::Journal && to.number > 0 && to.tier >= 2 && !by && Lore::questKind() == Lore::QuestKind::Escort)
+        {
+            escortFetch(to.number, now, x, y, radius, who);
+        }
         static uint32_t told = 0;
         const uint32_t pick = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         if (pick != told)
@@ -5717,6 +5914,17 @@ namespace
                             f.sumY += ty;
                         }
                     }
+                    // The escorted one looked for (escortFetch): a living creature of its type on the surface.
+                    if (g_escortWantType && o && *reinterpret_cast<const uint32_t*>(o) >= 0x880000 &&
+                        *reinterpret_cast<const uint32_t*>(o) < 0x8A0000 &&
+                        (*reinterpret_cast<const uint32_t*>(o + 0xC) & 0xFFFF) == static_cast<uint32_t>(it - table) &&
+                        !*(o + 0x24) && reinterpret_cast<cObject*>(const_cast<uint8_t*>(o))->asCreature() &&
+                        *reinterpret_cast<const int32_t*>(o + 0x4D8) > 0 &&
+                        *reinterpret_cast<const uint32_t*>(o + 0x10) == g_escortWantType)
+                    {
+                        g_escortSeen = {*reinterpret_cast<const uint32_t*>(o + 0xC), g_escortWantType,
+                                        *reinterpret_cast<const int32_t*>(o + 0x1C), *reinterpret_cast<const int32_t*>(o + 0x20), now};
+                    }
                     if (o && *reinterpret_cast<const uint32_t*>(o) >= 0x880000 && *reinterpret_cast<const uint32_t*>(o) < 0x8A0000 &&
                         (*reinterpret_cast<const uint32_t*>(o + 0xC) & 0xFFFF) == static_cast<uint32_t>(it - table) &&
                         !*(o + 0x24) && isChest(o) && !(*reinterpret_cast<const uint32_t*>(o + 0x14) & 0x4000))
@@ -5804,6 +6012,7 @@ namespace
                 }
             }
         }
+        learnEscortee(now);
         // The journal: every quest under way, its target a ring; the agent's own (questTarget's pick) in yellow.
         int32_t gx = 0, gy = 0;
         double radius = 0.0;
