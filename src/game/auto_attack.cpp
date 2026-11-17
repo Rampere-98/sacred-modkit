@@ -5500,6 +5500,14 @@ namespace
                         (s_on >> 32) & 0x7FFFFFFF,
                         on == g_questBook.end() ? "its step done or gone" : "out of reach, blocked or skipped",
                         d.spent / 1000, g.number);
+                    // Gone for and not done (the stuck solver, 2026-11-17, A5: 10261 «at 0 tiles» and 1702 over «out of reach,
+                    // blocked or skipped» after 252-299 s, picked again the same second, 6 times in 25 min with the 5 min
+                    // counted only on the way that ends well): a minute or more spent on it and the goal still there is left
+                    // 30 min as the 5 min would.
+                    if (on != g_questBook.end() && d.spent >= 60000)
+                    {
+                        d.until = now + 1800000;
+                    }
                     s_on = 0;
                 }
                 else
@@ -8079,7 +8087,8 @@ namespace
                 // multiplayer start's enclave, 620 and 217 tiles off, «the net has no way between the nodes near either end»
                 // at each try: the hero walked its crude straight orders 150 s, «no nearer», left it 30 min, and went on to
                 // the next one beyond the same gap, an hour in all with the potions at 0): left 30 min at once.
-                if (layer == 0 && m.layer == 0 && d <= shopReach)
+                if (layer == 0 && m.layer == 0 && d <= shopReach &&
+                    !(g_shopUselessAt.count(m.id) && now - g_shopUselessAt[m.id] < 1800000))
                 {
                     const int ftx = static_cast<int>(self->x / kTileSize), fty = static_cast<int>(self->y / kTileSize);
                     const int mtx = static_cast<int>(m.x / kTileSize), mty = static_cast<int>(m.y / kTileSize);
