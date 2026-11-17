@@ -2081,7 +2081,10 @@ namespace
     {
         const uint8_t* st = reinterpret_cast<const uint8_t*>(hero) + kStats;
         const bool active = slot == *reinterpret_cast<const uint16_t*>(entry + kActiveSlot);
-        const uint32_t weapon = slotItem(entry, slot, 0);
+        // The slot's weapon (the weapon hand first): hand 0 is the shield's or the bow's, empty beside a sword, and its
+        // id 0 was the key of every such slot, all judged by the active one's panel (A5, A7, A8, 2026-11-17: never a
+        // switch in hours, the idle slots only that panel times what gets through).
+        const uint32_t weapon = slotWeapon(entry, slot);
         const float plainEstimate = estimateDamage(hero, entry, slot, nullptr);
         const float estimate = target ? estimateDamage(hero, entry, slot, target) : plainEstimate;
         const float through = plainEstimate > 0.5f ? std::clamp(estimate / plainEstimate, 0.0f, 1.0f) : 1.0f;
