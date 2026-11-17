@@ -1329,6 +1329,39 @@ namespace
         return std::find(g_hirelings.begin(), g_hirelings.end(), id) != g_hirelings.end();
     }
 
+    // A creature under a quest sign of the dialog table (the icon's last digit 0, «!» to take a quest, or 1, «?» to report;
+    // the same test scanQuestMarks makes).
+    bool questSigned(const cObject* o)
+    {
+        if (!o)
+        {
+            return false;
+        }
+        const auto dialogs = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x755C);
+        const auto dialogsEnd = *reinterpret_cast<const uint8_t* const*>(0xAACF80 + 0x7560);
+        const uint32_t dialog = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(o) + 0x245);
+        if (!dialogs || dialogsEnd <= dialogs || !dialog || dialog >= static_cast<size_t>(dialogsEnd - dialogs) / 0x50)
+        {
+            return false;
+        }
+        const uint32_t icon = *reinterpret_cast<const uint32_t*>(dialogs + dialog * 0x50 + 0x48);
+        return icon < 20 && (icon % 10 == 0 || icon % 10 == 1);
+    }
+
+    // A follower that is no plain hireling: with a quest sign it is spoken to, whatever the hero's companions list or the guess
+    // from its steps say (the stuck solver, 2026-11-17, A8: f3d, the farmer's daughter of «Hábitos negros» (quest 1101, type
+    // 0x291), rescued and following, a «?» over her and the journal's creature to report to, was in the list with +8 = 1
+    // and «a hireling» for the talk: «not spoken to … hireling true», the quest never done).
+    bool isPlainHireling(uint32_t id)
+    {
+        if (!isHireling(id))
+        {
+            return false;
+        }
+        cObjectManager* om = cObjectManager::instance();
+        return !questSigned(om ? om->object(id) : nullptr);
+    }
+
     // --- The target: kept, given up when out of reach ---------------------------------------------------------------
 
     DWORD g_targetSince = 0;        // when the current target was taken
@@ -4273,8 +4306,13 @@ namespace
         }
         for (const uint8_t* r = begin; r && r < end; r += 9)
         {
-            const cCreature* c = objects->creature(*reinterpret_cast<const uint32_t*>(r));
-            if (c && c->health > 0 && r[8] == 0)
+            const uint32_t id = *reinterpret_cast<const uint32_t*>(r);
+            const cCreature* c = objects->creature(id);
+            // The script's follower (+8 = 0), or the journal's own creature (a rescued girl is in the list with +8 = 1).
+            if (c && c->health > 0 &&
+                (r[8] == 0 || std::any_of(g_questBook.begin(), g_questBook.end(), [id](const QuestGoal& g) {
+                    return g.kind == GoalKind::Journal && g.who == id;
+                })))
             {
                 return true;
             }
@@ -8585,7 +8623,7 @@ namespace
                 for (const Sign& sign : g_signs)
                 {
                     const double toGoal = std::hypot(static_cast<double>(sign.x - qx), static_cast<double>(sign.y - qy));
-                    if (toGoal < nearest && !talkedLately(sign.id, now) && !isHireling(sign.id))
+                    if (toGoal < nearest && !talkedLately(sign.id, now) && !isPlainHireling(sign.id))
                     {
                         nearest = toGoal;
                         who = sign.id;
@@ -9098,7 +9136,7 @@ namespace
                     cObjectManager* om = cObjectManager::instance();
                     cObject* o = om && !(id & 0x80000000u) ? om->object(id) : nullptr;
                     const auto* g = static_cast<const GoalAt*>(context);
-                    return o && talkable(o) && !isHireling(id) && std::abs(o->x - g->x) <= 10 * kTileSize &&
+                    return o && talkable(o) && !isPlainHireling(id) && std::abs(o->x - g->x) <= 10 * kTileSize &&
                            std::abs(o->y - g->y) <= 10 * kTileSize;
                 }, &goalAt, near1);
                 static uint32_t s_toldNot = 0;
@@ -9192,7 +9230,7 @@ namespace
                 }
             }
             const bool questCreature = speakTo && npc && npc->asCreature() && !notSomeone;
-            const bool talkNow = ((talkable(npc) && !notSomeone) || questCreature) && !isHireling(who) && failed < 4 &&
+            const bool talkNow = ((talkable(npc) && !notSomeone) || questCreature) && !isPlainHireling(who) && failed < 4 &&
                                  (talked == g_talkedAt.end() || now - talked->second > again);
             if (speakTo && !talkNow)
             {
@@ -9296,7 +9334,7 @@ namespace
                                     std::hypot(static_cast<double>(sign.x - npc->x), static_cast<double>(sign.y - npc->y)) / kTileSize,
                                     who);
                                 otherSign = otherSign || ((sign.id & 0xFFFF) != (who & 0xFFFF) && fromHero < 60.0 &&
-                                                          !talkedLately(sign.id, now) && !isHireling(sign.id));
+                                                          !talkedLately(sign.id, now) && !isPlainHireling(sign.id));
                             }
                             // Another creature with a sign within reach: this goal waits 5 min and the book moves on to
                             // that one (else 6 min «looking around it» and 15 more parked before the book got there).
