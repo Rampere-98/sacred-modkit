@@ -3834,6 +3834,7 @@ namespace
         DWORD until = 0;
         int count = 0;          // skips in a row
         int level = 0, done = 0, failed = 0;
+        int untilDone = 0;      // the cap's: back once this many quests are done (or its 2 h are over), 0 none
     };
     std::unordered_map<int32_t, OrderSkip> g_orderSkips;
     // Times in a row the goal followed was given up by the travel (no way for now, left a few minutes) with no step
@@ -3860,10 +3861,15 @@ namespace
         {
             return;
         }
-        int number = 0, count = 0, level = 0, done = 0, failed = 0;
-        unsigned long left = 0;
-        while (std::fscanf(f, "%d %d %d %d %d %lu", &number, &count, &level, &done, &failed, &left) == 6)
+        char line[96];
+        while (std::fgets(line, sizeof(line), f))
         {
+            int number = 0, count = 0, level = 0, done = 0, failed = 0, untilDone = 0;
+            unsigned long left = 0;
+            if (std::sscanf(line, "%d %d %d %d %d %lu %d", &number, &count, &level, &done, &failed, &left, &untilDone) < 6)
+            {
+                continue;
+            }
             if (number > 0 && count > 0)
             {
                 OrderSkip& k = g_orderSkips[number];
@@ -3871,6 +3877,7 @@ namespace
                 k.level = level;
                 k.done = done;
                 k.failed = failed;
+                k.untilDone = untilDone;
                 const DWORD until = now + static_cast<DWORD>(left);
                 k.until = left ? (until ? until : 1) : 0;
             }
@@ -3887,7 +3894,56 @@ namespace
             {
                 const unsigned long left =
                     k.until && static_cast<int>(now - k.until) < 0 ? static_cast<unsigned long>(k.until - now) : 0;
-                std::fprintf(f, "%d %d %d %d %d %lu\n", number, k.count, k.level, k.done, k.failed, left);
+                std::fprintf(f, "%d %d %d %d %d %lu %d\n", number, k.count, k.level, k.done, k.failed, left, k.untilDone);
+            }
+            std::fclose(f);
+        }
+    }
+    // The 45 min cap's clocks by quest number (questTarget), kept beside the exe: «number ms-gone done failed».
+    struct Cap
+    {
+        DWORD since = 0;
+        int done = 0, failed = 0;   // the journal's counts when it began
+    };
+    std::unordered_map<int32_t, Cap> g_caps;
+    bool g_capsRead = false, g_capsDirty = false;
+    std::wstring capsPath()
+    {
+        const std::wstring path = giversPath();
+        return path.substr(0, path.find_last_of(L"\\/") + 1) + L"SacredBild-caps.txt";
+    }
+    void readCaps(DWORD now)
+    {
+        g_capsRead = true;
+        FILE* f = _wfopen(capsPath().c_str(), L"r");
+        if (!f)
+        {
+            return;
+        }
+        int number = 0, done = 0, failed = 0;
+        unsigned long gone = 0;
+        while (std::fscanf(f, "%d %lu %d %d", &number, &gone, &done, &failed) == 4)
+        {
+            if (number > 0)
+            {
+                Cap& c = g_caps[number];
+                c.since = now - static_cast<DWORD>(gone);
+                c.since = c.since ? c.since : 1;
+                c.done = done;
+                c.failed = failed;
+            }
+        }
+        std::fclose(f);
+        LOG("AutoAttack: {} quests' 45 min clocks kept from the last runs", g_caps.size());
+    }
+    void writeCaps(DWORD now)
+    {
+        g_capsDirty = false;
+        if (FILE* f = _wfopen(capsPath().c_str(), L"w"))
+        {
+            for (const auto& [number, c] : g_caps)
+            {
+                std::fprintf(f, "%d %lu %d %d\n", number, static_cast<unsigned long>(now - c.since), c.done, c.failed);
             }
             std::fclose(f);
         }
@@ -3904,6 +3960,19 @@ namespace
             return false;
         }
         OrderSkip& k = it->second;
+        // Set aside by the cap: back once 3 other quests are done, or after its 2 h (the coordinator, 2026-11-17)
+        if (k.untilDone)
+        {
+            if (!g_journalSeen || (g_questsDone < k.untilDone && k.until && static_cast<int>(now - k.until) < 0))
+            {
+                return true;
+            }
+            LOG("AutoAttack: quest order: {} set aside by the cap: back ({} quests done, its 2 h {})", number,
+                g_questsDone, static_cast<int>(now - k.until) >= 0 ? "over" : "not over");
+            k.untilDone = 0;
+            k.until = 0;
+            g_skipsDirty = true;
+        }
         if (k.until && static_cast<int>(now - k.until) < 0)
         {
             return true;
@@ -4844,7 +4913,9 @@ namespace
             {
                 return a.tier > b.tier;
             }
-            const bool ak = kept(a), bk = kept(b);
+            // Not a goal skipped (its rank after the list): kept, it stayed first though skipped (A3 501, 2026-11-17:
+            // skipped by the cap at 13:14 and gone for again in the same pass, 2 h with 51 quests done)
+            const bool ak = kept(a) && a.rank <= kOrderCount, bk = kept(b) && b.rank <= kOrderCount;
             if (ak != bk)
             {
                 return ak;
@@ -4905,27 +4976,39 @@ namespace
         // pase lo que pase»; A3 501, A5 701, A6 1602 followed 09:10-10:43 and never skipped: the stall clock counts only
         // steps of the quest branch, under 30 s apart, away from the goal and with no new best distance, and shops,
         // farming and recovering between them, long trips that keep getting nearer, and jams of the place kept it from
-        // ever filling). Wall time since it was first followed with this objective; not followed for 30 min (A5 left 701
-        // for 202 24 min, and back, each parked by a block), it begins anew.
-        if (g.number > 0 && g.kind != GoalKind::Giver)
+        // ever filling). Wall time by quest number since it was first followed, begun anew only when the journal moves on
+        // (a quest done or failed; not a change of objective: A3's 501 went 2 h so), kept across restarts in
+        // SacredBild-caps.txt; at 45 min it is set aside until 3 other quests are done or for 2 h.
+        if (g.number > 0 && g.kind != GoalKind::Giver && g_journalSeen)
         {
-            struct Cap
+            if (!g_capsRead)
             {
-                DWORD since = 0, last = 0;
-                uint32_t objective = 0;
-            };
-            static std::unordered_map<int32_t, Cap> s_caps;
-            Cap& c = s_caps[g.number];
-            if (!c.since || c.objective != g.objectiveKey || now - c.last > 1800000)
+                readCaps(now);
+            }
+            Cap& c = g_caps[g.number];
+            if (!c.since || c.done != g_questsDone || c.failed != g_questsFailed)
             {
                 c.since = now ? now : 1;
-                c.objective = g.objectiveKey;
+                c.done = g_questsDone;
+                c.failed = g_questsFailed;
+                g_capsDirty = true;
             }
-            c.last = now;
             if (now - c.since > 2700000)
             {
-                s_caps.erase(g.number);
-                orderSkip(g.number, now, "followed 45 min with no step done (the cap, whatever else)");
+                g_caps.erase(g.number);
+                g_capsDirty = true;
+                orderSkip(g.number, now,
+                          "followed 45 min with no quest done (the cap, whatever else; back after 3 other quests or 2 h)");
+                OrderSkip& k = g_orderSkips[g.number];
+                k.until = now + 7200000;
+                k.until = k.until ? k.until : 1;
+                k.untilDone = g_questsDone + 3;
+            }
+            static DWORD s_capsWritten = 0;
+            if (g_capsDirty || now - s_capsWritten > 60000)
+            {
+                s_capsWritten = now;
+                writeCaps(now);
             }
         }
         s_keptKind = g.kind;
