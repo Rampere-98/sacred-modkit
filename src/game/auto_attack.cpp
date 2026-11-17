@@ -4027,7 +4027,7 @@ namespace
                 if (g_scriptValuesSeen)
                 {
                     const auto value = g_scriptValuesSeen->find(n);
-                    onOffer = value != g_scriptValuesSeen->end() && value->second == 1;
+                    onOffer = n >= 10000 || (value != g_scriptValuesSeen->end() && value->second == 1);
                 }
                 if (!giver)
                 {
@@ -4438,6 +4438,10 @@ namespace
                 // Not one the journal has (open, done or failed): a quest's variable is not always bits, 1 can be a
                 // step of one taken (Manolito, block BP: 901's is a counter, 1 = its cave entered).
                 const auto value = s_values.find(q.number);
+                // A DQ_ quest (10250+) has no script variable (Manolito, block BR): on offer while the journal does not
+                // have it; its giver, set up by QIS_OnSetUp<n>, may not be there at every time (then it is come to and
+                // tried again later, as any giver whose quest was not taken).
+                const bool onOffer = q.number >= 10000 ? true : value != s_values.end() && value->second == 1;
                 const bool inJournal =
                     std::find(g_doneNumbers.begin(), g_doneNumbers.end(), q.number) != g_doneNumbers.end() ||
                     std::find(g_failedNow.begin(), g_failedNow.end(), q.number) != g_failedNow.end() ||
@@ -4447,7 +4451,7 @@ namespace
                 // A giver come to whose quest was not taken (its sign not shown yet: a quest before it, the hero's
                 // level) is gone to again once the hero has gained a level or done a quest since (the coordinator,
                 // 2026-11-17: 40 quests so in the 8 copies, A5's 151 among them, the giver never tried again).
-                if (value != s_values.end() && value->second == 1 && !inJournal)
+                if (onOffer && !inJournal)
                 {
                     static std::unordered_map<int32_t, std::pair<int, int>> s_visitedWhen;    // level, quests done
                     if (const auto v = std::find(s_visited.begin(), s_visited.end(), q.number); v != s_visited.end())
@@ -4464,7 +4468,7 @@ namespace
                         }
                     }
                 }
-                if (value == s_values.end() || value->second != 1 || inJournal ||
+                if (!onOffer || inJournal ||
                     std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end())
                 {
                     continue;

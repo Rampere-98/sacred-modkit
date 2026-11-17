@@ -82,10 +82,23 @@ for key, name, zone in mains:
             q["key"] = key
 
 # The game's sector levels at givers and objectives
-rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(docs, "Sacred", "Misiones-dadores.tsv"), encoding="utf8")][1:]
+def tsv(name):
+    path = os.path.join(docs, "Sacred", name)
+    if not os.path.exists(path):
+        return []
+    lines = open(path, encoding="utf8").read().splitlines()
+    head = lines[0].split("\t")
+    return [dict(zip(head, l.split("\t"))) for l in lines[1:] if l.strip()]
+
+
+# The main TSV and the DQ_ quests' (Manolito's block BR, 2026-11-17: 15001-15084 and 10250-10261, no script variable)
+rows = tsv("Misiones-dadores.tsv") + [r for r in tsv("Misiones-dadores-dq.tsv")
+                                      if 10250 <= int(r["mision"]) <= 10261 or 15001 <= int(r["mision"]) <= 15084]
 region_lo = {}
 for r in rows:
-    n, role, region, lo = int(r[0]), r[1], int(r[6]), int(r[7])
+    n, role, region, lo = int(r["mision"]), r["papel"], int(r["region"]), int(r["nivel_min"])
+    if n == 10254:
+        continue
     region_lo[region] = min(region_lo.get(region, 999), lo)
     q = quests.setdefault(n, {"number": n, "key": "", "title": "?", "main": False})
     q.setdefault("giver" if role == "dador" else "goal", lo)
