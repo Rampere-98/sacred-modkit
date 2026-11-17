@@ -93,6 +93,13 @@ for r in rows:
 # Neither a title nor a giver (209: only an objective's row in the TSV, no quest in the journal's titles nor in
 # QUESTS.md): a step's variable, not a quest
 quests = {n: q for n, q in quests.items() if q["title"] != "?" or "giver" in q}
+# One quest under two keys (DQ_10254 «Secuestrada» is the journal's 210, HQ_3_2_2): a number never seen in the journal
+# whose title is that of one seen there is the same quest, left out (it would never read as done)
+seen_titles = {norm(t): n for n, (t, *_rest) in seen.items()}
+dropped = [n for n, q in quests.items() if n not in seen and seen_titles.get(norm(q["title"]), n) != n]
+quests = {n: q for n, q in quests.items() if n not in dropped}
+if dropped:
+    print("left out (the same quest as one the journal has):", dropped)
 for q in quests.values():
     for src in ("giver", "goal"):
         if src in q:

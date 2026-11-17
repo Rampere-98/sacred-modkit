@@ -3834,7 +3834,7 @@ namespace
                 return true;
             }
             LOG("AutoAttack: quest order: {} back in its place (the hero's level or the journal changed)", number);
-            k.count = 0;
+            k.count = 1;   // one more stall parks it again (the journal moves on any failure and load too)
         }
         return false;
     }
@@ -4133,7 +4133,10 @@ namespace
             c.spent += now - c.last;
         }
         c.last = now;
-        if (c.spent > (p.tier >= 2 ? 2400000u : 1200000u))   // an escort or one with a deadline: 40 min
+        // An escort or one with a deadline: 40 min, but 20 once it has been skipped before.
+        const auto before = g_orderSkips.find(p.number);
+        const bool skippedBefore = before != g_orderSkips.end() && before->second.count > 0;
+        if (c.spent > (p.tier >= 2 && !skippedBefore ? 2400000u : 1200000u))
         {
             orderSkip(p.number, now, p.tier >= 2 ? "gone for 40 min, no step done nor nearer"
                                                  : "gone for 20 min, no step done nor nearer");
