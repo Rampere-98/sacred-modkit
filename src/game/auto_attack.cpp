@@ -8759,16 +8759,10 @@ namespace
                     int dx = door->outX, dy = door->outY;
                     if (!door->start)
                     {
-                        double bestA = 1e9;
-                        for (const auto& a : Teleports::anchorsNear(0, door->outX, door->outY, 6))
-                        {
-                            if (const double d = std::hypot(a.first - htx, a.second - hty); d < bestA)
-                            {
-                                bestA = d;
-                                dx = a.first;
-                                dy = a.second;
-                            }
-                        }
+                        // A cave's script zone beside the landing first, then the stairs anchor (A5, 2026-11-17 21:04:
+                        // cave 5.1's landing 2000,3434, the anchor 2000,3436 stood on 30 s with no jump, «hemmed in»,
+                        // quest 501 left; cave 5.2 went in at once from its zone, 2004,3627).
+                        RouteNet::doorStep(0, door->outX, door->outY, htx, hty, dx, dy);
                     }
                     static int s_doorToldX = -1;
                     if (s_doorToldX != dx)
