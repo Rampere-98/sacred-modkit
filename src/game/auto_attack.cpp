@@ -4041,7 +4041,7 @@ namespace
         static DWORD s_last = 0, s_spent = 0;
         static double s_best = 0.0;
         const OrderPick& p = g_orderPick;
-        if (p.number <= 0 || p.tier >= 2 || p.kind == GoalKind::Giver)
+        if (p.number <= 0 || p.kind == GoalKind::Giver)
         {
             s_head = 0;
             return;
@@ -4062,7 +4062,7 @@ namespace
             s_spent += now - s_last;
         }
         s_last = now;
-        if (s_spent > 1200000)
+        if (s_spent > (p.tier >= 2 ? 2400000u : 1200000u))   // an escort or one with a deadline: 40 min, never stuck behind it for good
         {
             g_orderSkipUntil[s_head] = now + 1800000;
             LOG("AutoAttack: quest order: {} skipped: gone for 20 min, no step done nor nearer (tried again in 30 min)",
