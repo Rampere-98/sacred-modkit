@@ -852,7 +852,7 @@ namespace
     {
         void* types = typeMgr();
         if (!types || slotElement(id) < 0 || styleOf(id) < 0 ||
-            !fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) || !fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
+            (!fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) && !HeroProfile::rangedKind(HeroProfile::itemWeaponKind(id))) || !fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
         {
             return false;
         }
