@@ -851,6 +851,40 @@ namespace
 
     int g_keptNow = 0, g_keptFuture = 0;
 
+    int styleOf(uint32_t id);
+
+    // A weapon the weapon slots want: one the hero can use now, for a main hand, of an element no slot holds while a
+    // slot not in use is empty, or better by 5 % than the weapon of its element in a slot not in use. The sale only
+    // kept the upgrades of the hands in use, so these were sold and the slots stayed empty (the player, 2026-11-17:
+    // «investiga por qué los agentes están usando solamente 1 ranura»: A2, A5, A6, A7, A8 with one weapon slot).
+    bool slotsWant(cCreature* hero, const uint8_t* pack, uint32_t id)
+    {
+        void* types = typeMgr();
+        const int element = slotElement(id);
+        if (!types || element < 0 || styleOf(id) < 0 || !fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) ||
+            !fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
+        {
+            return false;
+        }
+        const int open = slotsOpen(hero);
+        const int active = *reinterpret_cast<const uint16_t*>(pack + 0xD58);   // kActiveSlot
+        bool empty = false;
+        for (int slot = 0; slot < open; ++slot)
+        {
+            const uint32_t w = slotWeapon(pack, slot);
+            if (!w)
+            {
+                empty = empty || slot != active;
+                continue;
+            }
+            if (slotElement(w) == element)
+            {
+                return slot != active && worth(id).score > worth(w).score * 1.05f;
+            }
+        }
+        return empty;
+    }
+
     bool sellOne(cCreature* hero, uint8_t* pack)
     {
         void* inv = inventory();
@@ -913,6 +947,12 @@ namespace
             // a piece of the class he will never wear is sold as any other (the player, 2026-11-16, the Seraphim).
             const bool wearable = classOk && fn<CanUse>(g_canUse)(hero, nullptr, id, 0) != 0;
             const int slot = classOk ? bestSlot(hero, id, 0.05f, nullptr, &fits) : -1;
+            if (classOk && slotsWant(hero, pack, id))
+            {
+                ++g_keptNow;
+                ++g_sellWhy[4];
+                return;
+            }
             if (classOk && fits && slot >= 0 && !wearable && !future.count(id))
             {
                 // of the class, not wearable now nor a future upgrade kept: on to the sale
