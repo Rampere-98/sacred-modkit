@@ -11,6 +11,7 @@
 {9, 4, true},  // Piratas del río (zone)
 {10, 4, true},  // El aullido del lobo (chain)
 {11, 4, true},  // Llamada a las armas (chain)
+{12, 4, true},  // Espadas y magia (chain)
 {20, 4, true},  // Por el Rey y la patria (zone)
 {22, 4, true},  // Al servicio de la corona (zone)
 {31, 4, true},  // Por la corona de Ancaria (chain)
