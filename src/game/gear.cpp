@@ -4322,6 +4322,7 @@ namespace
         uint32_t by = 0;
         int slot = 0, element = 0;
         float from = 0.0f, to = 0.0f;
+        const char* why = "beaten";
     };
     std::unordered_map<uint32_t, Beaten> g_storageOut;
     constexpr const char* kElementName[4] = {"physical", "fire", "magic", "poison"};
@@ -4342,10 +4343,13 @@ namespace
         };
         std::vector<Piece> all;
         // Kept only with a storage chest near and room in it (the reviewer, S2): else sold as before.
-        if (!AutoAttack::storageNear() || (g_storageFullAt && GetTickCount() - g_storageFullAt < 1800000))
+        if (!AutoAttack::storageNear())
         {
             return {};
         }
+        // Full lately: the storage's own pieces still judged (the beaten and useless ones out, the owner, 2026-11-17:
+        // «veo que el almacén lo tienen lleno»), none of the backpack's kept for it.
+        const bool full = g_storageFullAt && GetTickCount() - g_storageFullAt < 1800000;
         const auto consider = [&](uint32_t id, bool stored) {
             if ((flagsOf(id) & kQuestItem) || worth(id).weapon || !fn<CanUse>(g_canUse)(hero, nullptr, id, 1))
             {
@@ -4450,7 +4454,34 @@ namespace
         {
             eachItem(store, setPiece);
         }
+        // Every other piece in the storage is of no use now: another class's, worse than worn everywhere, too low a
+        // resistance or level, no zone's piece nor a future upgrade nor a set's: out and sold. Never a weapon (none is
+        // put in), a rune or a quest item.
+        std::unordered_set<uint32_t> stored;
+        if (store)
+        {
+            cObjectManager* objects = cObjectManager::instance();
+            eachItem(store, [&](uint32_t id, int, int, int) {
+                stored.insert(id);
+                const auto* o = reinterpret_cast<const uint8_t*>(objects ? objects->object(id) : nullptr);
+                if (keep.count(id) || g_storageOut.count(id) || (flagsOf(id) & kQuestItem) || worth(id).weapon ||
+                    (o && *reinterpret_cast<const uintptr_t*>(o) == kRuneVtable))
+                {
+                    return;
+                }
+                Beaten b;
+                b.slot = bodySlotOf(id);
+                b.why = !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) ? "another class's"
+                        : b.slot < 0                                 ? "no body slot"
+                                                                     : "of no use for any zone now";
+                g_storageOut[id] = b;
+            });
+        }
         std::erase_if(g_storageOut, [&](const auto& e) { return keep.count(e.first) != 0; });
+        if (full)
+        {
+            std::erase_if(keep, [&](uint32_t id) { return !stored.count(id); });
+        }
         return keep;
     }
 
@@ -4611,9 +4642,17 @@ namespace
                     const bool moved =
                         reinterpret_cast<MoveItem>(kMoveItem)(inv, nullptr, kStoreEntry, heroIdx, beaten, heroIdx) != 0;
                     g_visitOut.insert(beaten);
-                    LOG("Gear: storage: {:x} (type {:x}, slot {}, {} {:.0f}) {}: {:x} is better ({:.0f})", beaten,
-                        typeOf(beaten), b.slot, kElementName[b.element], b.from,
-                        moved ? "taken out, to be sold" : "not taken out: no room in the backpack", b.by, b.to);
+                    if (b.by)
+                    {
+                        LOG("Gear: storage: {:x} (type {:x}, slot {}, {} {:.0f}) {}: {:x} is better ({:.0f})", beaten,
+                            typeOf(beaten), b.slot, kElementName[b.element], b.from,
+                            moved ? "taken out, to be sold" : "not taken out: no room in the backpack", b.by, b.to);
+                    }
+                    else
+                    {
+                        LOG("Gear: storage: {:x} (type {:x}, slot {}) {}: {}", beaten, typeOf(beaten), b.slot,
+                            moved ? "taken out, to be sold" : "not taken out: no room in the backpack", b.why);
+                    }
                     if (moved)
                     {
                         g_storageOut.erase(beaten);
@@ -4622,11 +4661,26 @@ namespace
                     }
                 }
             }
-            // One kept piece in.
+            // One kept piece in, with the storage under 70 % of its squares (room left for what comes: the owner,
+            // 2026-11-17).
             uint32_t in = 0;
+            int boxCells = 0, boxUsed = 0;
+            if (uint8_t* box = entryOf(kStoreEntry))
+            {
+                boxCells = *reinterpret_cast<uint16_t*>(box + 0x115C) * *reinterpret_cast<uint16_t*>(box + 0x115E);
+                eachItem(box, [&](uint32_t, int, int iw, int ih) { boxUsed += iw * ih; });
+            }
+            const bool roomy = !boxCells || boxUsed * 10 < boxCells * 7;
             eachItem(pack, [&](uint32_t id, int, int, int) {
-                in = !in && g_storageKeep.count(id) && !g_visitOut.count(id) && !g_visitIn.count(id) ? id : in;
+                in = roomy && !in && g_storageKeep.count(id) && !g_visitOut.count(id) && !g_visitIn.count(id) ? id : in;
             });
+            static DWORD s_capTold = 0;
+            if (!roomy && (!s_capTold || now - s_capTold > 1800000))
+            {
+                s_capTold = now | 1;
+                LOG("Gear: storage: {} of {} squares used (70 % or more): nothing more put in until room is made", boxUsed,
+                    boxCells);
+            }
             if (in)
             {
                 float r[4];
@@ -4670,10 +4724,47 @@ namespace
                     return true;
                 }
             }
+            // Sorted once a visit with the game's own sort of a grid (the inventory's arrow, 0x5DB6B0, on the storage's
+            // entry): no loose gaps keeping a big piece out (the owner, 2026-11-17: «tienen que saber organizar el
+            // almacén»).
+            static uint32_t s_sortedVisit = 0;
+            if (store && s_sortedVisit != used && Act::allowed(Act::Kind::SortInventory, "sort the storage after the visit"))
+            {
+                s_sortedVisit = used;
+                uint16_t cell = 0;
+                const bool before = fn<FindFree>(g_findFree)(store, nullptr, 2, 4, &cell, 0) != 0;
+                using AutoSort = void(__fastcall*)(uint8_t* entry, void*, uint16_t mode);
+                reinterpret_cast<AutoSort>(0x5DB6B0)(store, nullptr, 0);
+                const bool after = fn<FindFree>(g_findFree)(store, nullptr, 2, 4, &cell, 0) != 0;
+                LOG("Gear: storage sorted (the game's grid sort): a 2x4 piece fits {} -> {}", before ? "yes" : "no",
+                    after ? "yes" : "no");
+                return true;
+            }
+            // What is in it and why (the owner, 2026-11-17: «mide qué hay guardado»): by body slot and purpose.
             size_t inStore = 0;
             if (store)
             {
-                eachItem(store, [&](uint32_t, int, int, int) { ++inStore; });
+                std::unordered_map<std::string, int> byKind;
+                int zone = 0, other = 0, outN = 0;
+                eachItem(store, [&](uint32_t id, int, int, int) {
+                    ++inStore;
+                    float r[4];
+                    resistOf(hero, id, r);
+                    int e = 1;
+                    for (int k = 2; k < 4; ++k)
+                    {
+                        e = r[k] > r[e] ? k : e;
+                    }
+                    ++byKind["slot " + std::to_string(bodySlotOf(id)) + " " + kElementName[e]];
+                    ++(g_storageOut.count(id) ? outN : g_storageKeep.count(id) ? zone : other);
+                });
+                std::string list;
+                for (const auto& [k, v] : byKind)
+                {
+                    list += (list.empty() ? "" : ", ") + k + " " + std::to_string(v);
+                }
+                LOG("Gear: storage holds {} ({} squares of {}): kept {}, to take out {}, else {}; by slot and purpose: {}",
+                    inStore, boxUsed, boxCells, zone, outN, other, list);
             }
             LOG("Gear: storage: nothing more to put in or take out ({} pieces kept for zones, {} in the storage)",
                 g_storageKeep.size(), inStore);
