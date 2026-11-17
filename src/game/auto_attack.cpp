@@ -4787,6 +4787,13 @@ namespace
                         LOG("AutoAttack: a quest failed ({} failed now): as a death, the last save loaded", failed);
                         remember("falló una misión: cuenta como muerte");
                         AgentSave::questFailed();
+                        // The save loaded has the quest open again (A8, 2026-11-17: the rescued girl of 1101 died with the hero,
+                        // «left for this run» and the quest forgotten though the load gave it back): tried again; a second
+                        // failure is let be by the branch above (paid once).
+                        for (const int32_t number : newFails)
+                        {
+                            std::erase(g_givenUpQuests, number);
+                        }
                     }
                 }
                 Findings::note("quest", heroX, heroY, "the journal moved on: {} done, {} failed", done, failed);
