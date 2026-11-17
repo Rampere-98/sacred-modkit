@@ -2963,7 +2963,7 @@ namespace
     // heroType, short dir; 2 keeps the index). An art the hero has not learned yet is worth the fourth rune and the
     // 2000 gold (the player, 2026-11-12: «aprender todas las artes es bueno, de los mejores upgrades»); with all of
     // them learned, the 3:1's random rune of the class gives more levels for the runes spent.
-    using RuneList = void(__cdecl*)(void* vec, int heroType);
+    using RuneList = void(__stdcall*)(void* vec, int heroType);
     using ArtOfType = uint16_t(__fastcall*)(void* types, void*, uint32_t type);
     using FindArt = int(__fastcall*)(void* stats, void*, short art);
     using LottoSelect = void(__fastcall*)(uint8_t* ui, void*, int heroType, short dir);
