@@ -155,6 +155,7 @@ namespace
     bool merchantTakes(uint32_t type);
     int tabFor(uint32_t type);
     bool packFull(uint8_t* pack);
+    bool packNearlyFull(uint8_t* pack);
     // The trades (+0x200's bits) of the creatures on the screen within 1500 px of the hero, read on the presenting
     // thread twice a second (Gear::onFrame); 0x1000 smith, 0x2000 merchant, 0x4000 combo master, 0x4000000 stable.
     std::atomic<uint32_t> g_tradesNear{0};
@@ -1071,10 +1072,19 @@ namespace
         return type == 0x1433 || type == 0x1419 || type == 0x1414;
     }
     int g_healing = -1;     // in the backpack at the last look (-1: not counted yet)
-    // Healing potions kept, by the class's mind (8 for the melee classes, 5 for the Mage: docs/Mentalidades.md).
+    int g_hirelingsNow = 0;
+    uint32_t g_potionPrice = 600;   // the cheapest healing potion last seen on sale (the reserve for equipment buys)
+    // Healing potions kept, by the class's mind (8 for the melee classes, 5 for the Mage: docs/Mentalidades.md), 2 more
+    // a hireling (they drink from the hero's stock); up to 20 with gold to spare, over 5 times what the potions up to 20
+    // cost (the coordinator, 2026-11-17: A2 bought 8 and was back at the merchant 15-20 min later, 30 of its 88 min in
+    // shops, with 60-80 000 gold).
     int wantHealing()
     {
-        return Mind::now().potionStock;
+        constexpr int kRich = 20;
+        const int base = std::min(kRich, Mind::now().potionStock + 2 * std::max(0, g_hirelingsNow));
+        const cCreature* hero = cObjectManager::instance() ? cObjectManager::instance()->hero() : nullptr;
+        const uint64_t gold = hero ? *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + kGold) : 0;
+        return gold > 5ull * static_cast<uint64_t>(kRich - base) * g_potionPrice ? kRich : base;
     }
 
     int countHealing(uint8_t* pack)
@@ -1083,8 +1093,6 @@ namespace
         eachItem(pack, [&](uint32_t id, int, int, int) { n += healingType(typeOf(id)) ? 1 : 0; });
         return n;
     }
-
-    uint32_t g_potionPrice = 600;   // the cheapest healing potion last seen on sale (the reserve for equipment buys)
 
     bool buyPotion(cCreature* hero, uint8_t* pack)
     {
@@ -1110,6 +1118,12 @@ namespace
         // 190 deaths with no potion, the median gold at death 2815 and visits leaving with 4 of 5-8; the 40 % kept
         // back bought two a visit).
         const int have = countHealing(pack);
+        // Past the class's own stock (the potions of gold to spare), none into a backpack nearly full: selling comes
+        // before it fills (the owner's rule).
+        if (have >= Mind::now().potionStock && packNearlyFull(pack))
+        {
+            return false;
+        }
         const bool urgent = have < wantHealing();
         if (!urgent && gold < s_visitGold * 2 / 5)
         {
@@ -1215,7 +1229,8 @@ namespace
 
     bool buyExtraPotion(cCreature* hero, uint8_t* pack)
     {
-        if (countHealing(pack) < wantHealing())
+        // The class's own stock (not the 20 of gold to spare: the antidotes and the rest are not held for them)
+        if (countHealing(pack) < std::min(wantHealing(), Mind::now().potionStock))
         {
             return false;
         }
@@ -4535,7 +4550,8 @@ namespace
                 // (≈ 1318): before that the potions are worth more.
                 const int heroLevel = *reinterpret_cast<const uint16_t*>(st + 0x56);
                 const bool horse = HeroProfile::current().cls != HeroProfile::Class::Dwarf &&
-                                   (heroLevel >= 4 || g_horseUpgrade) && countHealing(pack) >= wantHealing() &&
+                                   (heroLevel >= 4 || g_horseUpgrade) &&
+                                   countHealing(pack) >= std::min(wantHealing(), Mind::now().potionStock) &&
                                    gold >= std::max(2000u, 1400u + 2 * g_potionPrice) &&
                                    (*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x570) == 0 ||
                                     g_horseUpgrade) &&
@@ -5369,4 +5385,9 @@ int Gear::weaponSlotsOpen()
 int Gear::healingLeft()
 {
     return g_healing;
+}
+
+void Gear::setHirelings(int count)
+{
+    g_hirelingsNow = count;
 }

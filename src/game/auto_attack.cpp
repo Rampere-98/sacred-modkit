@@ -3561,6 +3561,7 @@ namespace
         situation.range = range;
         situation.hirelings = g_hirelings.data();
         situation.hirelingCount = static_cast<int>(g_hirelings.size());
+        Gear::setHirelings(situation.hirelingCount);
         Tactics::think(situation);
         return chosen;
     }

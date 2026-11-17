@@ -51,6 +51,8 @@ namespace Gear
 
     // Healing potions in the backpack at the last look (-1 not counted yet).
     int healingLeft();
+    // The hirelings following the hero now (AutoAttack tells at each look): their potions are kept too.
+    void setHirelings(int count);
     // The backpack has no room left (whatever the trips setting): the agent leaves items lying.
     bool packFull();
     // A better piece lies on the ground (id) and the backpack is full: Gear drops the worst piece it would sell anyway,
