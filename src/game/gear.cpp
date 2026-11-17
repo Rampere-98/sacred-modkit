@@ -852,6 +852,7 @@ namespace
     int g_keptNow = 0, g_keptFuture = 0;
 
     int styleOf(uint32_t id);
+    const char* elementName(int k);
 
     // A weapon the weapon slots want: one the hero can use now, for a main hand, of an element no slot holds while a
     // slot not in use is empty, or better by 5 % than the weapon of its element in a slot not in use. The sale only
@@ -1009,12 +1010,28 @@ namespace
                     continue;
                 }
                 g_sold.insert(id);
+                // What the weapon slots made of it (the player, 2026-11-17: «los agentes continúan usando solo una
+                // ranura»: no weapon was ever kept for them; its element, whether the hero can use it now, a main hand).
+                std::string weaponNote;
+                if (styleOf(id) >= 0)
+                {
+                    void* types = typeMgr();
+                    weaponNote = std::format(" [weapon: element {}, use now {}, main hand {}, slots want {}]",
+                                             slotElement(id) >= 0 ? elementName(slotElement(id)) : "?",
+                                             fn<CanUse>(g_canUse)(hero, nullptr, id, 0) != 0,
+                                             types && fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) != 0,
+                                             slotsWant(hero, pack, id));
+                }
                 const uint32_t price = fn<Price>(g_price)(inv, nullptr, id, 0);
                 fn<RemoveItem>(g_removeItem)(pack, nullptr, id, 1);
                 fn<PutItem>(g_putItem)(stock, nullptr, free, id, w, h, 1);
                 fn<AddGold>(g_addGold)(reinterpret_cast<uint8_t*>(hero) + kStats, nullptr, static_cast<int>(price));
                 LOG("Gear: sold {:x} (type {:x}) for {} gold on the {} tab{}", id, typeOf(id), price,
                     page == 0 ? "first" : page == 1 ? "second" : "third", classOk ? "" : " (not for this class)");
+                if (!weaponNote.empty())
+                {
+                    LOG("Gear: sold {:x}{}", id, weaponNote);
+                }
                 done = true;
                 return;
             }
