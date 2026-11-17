@@ -5302,6 +5302,29 @@ namespace
         }
         return now - w.since > 150000;
     }
+    // Two merchants given up as «no nearer in 150 s» within 15 min: the rest lie across the same barrier (the stuck solver,
+    // 2026-11-17, A3: a Battle Mage of level 21, no potion, loaded on a shore at 1599,3064 with the lake between it and
+    // seven remembered merchants 205-244 tiles east; each tried 150 s and left 30 min, one after the other, for 22+ min,
+    // the stuck guard walking about the shore between them; the quest order's 20 min never ran, the hero never on the
+    // quest branch). The trip is left 10 min (the farming zone 132 tiles west was fine) and the places beyond are tried
+    // again then, with whatever the hero has seen of the way round.
+    bool shopStalledTwice(DWORD now)
+    {
+        static DWORD s_first = 0;
+        static int s_count = 0;
+        if (!s_first || now - s_first > 900000)
+        {
+            s_first = now;
+            s_count = 0;
+        }
+        if (++s_count < 2)
+        {
+            return false;
+        }
+        s_first = 0;
+        return true;
+    }
+
     // No merchant to be reached: the nearest way in or out the map knows (a portal, a door, a cave) within 400 tiles, each
     // tried once in 20 min, walked to for 3 min.
     DWORD g_exitUntil = 0;
@@ -7059,6 +7082,11 @@ namespace
                         g_shopUselessAt[best->id] = now;
                         g_shopId = 0;
                         s_listWatch = ShopWatch{};
+                        if (shopStalledTwice(now))
+                        {
+                            LOG("AutoAttack: two merchants in a row not reached: no trip for 10 min, the experience first");
+                            Gear::noTripFor(600000);
+                        }
                         armExit(now, self, layer);
                         g_roamAt = 0;
                         return;
@@ -7154,6 +7182,11 @@ namespace
                             s_remFailedAt[key] = now;
                             s_remKey = 0;
                             s_remWatch = ShopWatch{};
+                            if (shopStalledTwice(now))
+                            {
+                                LOG("AutoAttack: two merchants in a row not reached: no trip for 10 min, the experience first");
+                                Gear::noTripFor(600000);
+                            }
                             armExit(now, self, layer);
                             g_roamAt = 0;
                             return;
