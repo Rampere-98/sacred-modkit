@@ -4411,9 +4411,10 @@ namespace
     std::unordered_set<uint32_t> g_visitIn, g_visitOut;
     std::atomic<DWORD> g_storageAt{0};          // when it was used, then when the work in it was done
     std::atomic<bool> g_storageOutWaiting{false};   // beaten or useless pieces in the storage, marked to be sold
-    // A piece resisting this many times another's wins the storage's place for that purpose whatever their rarity
-    // (the owner's rule asked, 2026-11-17 17:51: «más del 50 % mejor gana aunque sea menos raro»).
-    constexpr float kResistOverRarity = 1.5f;
+    // No resistance margin over the rarity: the owner, 2026-11-17 17:55, shown set 62 against yellow 98: «quiero que
+    // continúe la rareza», «la prioridad es de la más rara». The rarer always wins; resistance and score only between
+    // the same rarity (a margin, if ever asked again, goes here).
+    constexpr float kResistOverRarity = 1e30f;
     std::atomic<bool> g_storageDone{false};     // the work done: closing
     std::atomic<bool> g_storageShown{false};    // the chest's window seen open this visit
     DWORD g_storageVisitAt = 0;                 // the last visit (none wanted again for 10 min but for a new piece)
