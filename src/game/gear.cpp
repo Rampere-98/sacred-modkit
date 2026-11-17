@@ -574,7 +574,12 @@ namespace
             // With the skill, a second weapon takes the shield's place (better() never swaps a shield for a weapon).
             const bool secondOverShield = slot == 12 && current && handClass(id) == 3 && !worth(current).weapon &&
                                           weaponBesideOneHanded;
-            if (!current && (slot == 12 || slot == 13) && !shieldBeside && !secondBeside)
+            // And a hero with no weapon in hand at all takes one: a main-hand weapon into 13, a bow into 12 (A2,
+            // 2026-11-17: his weapons thrown away by Throwing Blades, five empty slots and nothing ever put on again).
+            const uint32_t heldOther = fn<GetEquipped>(g_getEquipped)(hero, nullptr, slot == 12 ? 13 : 12);
+            const bool unarmed = !current && !heldOther &&
+                                 ((slot == 13 && (handClass(id) == 2 || handClass(id) == 3)) || (slot == 12 && handClass(id) == 1));
+            if (!current && (slot == 12 || slot == 13) && !shieldBeside && !secondBeside && !unarmed)
             {
                 continue;
             }
