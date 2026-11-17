@@ -996,6 +996,146 @@ namespace
         return false;
     }
 
+    struct ExtraPotion
+    {
+        uint32_t types[3];
+        int want;
+        const char* name;
+    };
+    constexpr ExtraPotion kExtraPotions[] = {
+        {{0x1432, 0x1418, 0x1413}, 2, "antidote"},
+        {{0x1431, 0x1417, 0x1412}, 1, "Mentor"},
+        {{0x1434, 0x141A, 0x1415}, 1, "concentration"},
+    };
+    // The scrolls read or refused once (readScroll)
+    std::unordered_set<uint32_t> g_scrollsTried;
+    bool isScroll(const cObject* item);
+    // Each item's first sight in the backpack (the owner, 2026-11-17 14:35: «hay objetos en el inventario que ni los
+    // usan, ni los venden, ni les dan utilidad»): one of the class with no slot and no use of its own (not a potion
+    // the fights drink, a gem, a rune, a scroll to read) held over 30 min is sold.
+    std::unordered_map<uint32_t, DWORD> g_packSince;
+    int extraKind(uint32_t type)
+    {
+        for (int k = 0; k < static_cast<int>(std::size(kExtraPotions)); ++k)
+        {
+            const ExtraPotion& e = kExtraPotions[k];
+            if (type == e.types[0] || type == e.types[1] || type == e.types[2])
+            {
+                return k;
+            }
+        }
+        return -1;
+    }
+    int g_sellExtra[3] = {}, g_sellGems = 0;
+    constexpr int kGemsKept = 4;
+    // What a player would do with it, for the log: use, sell, store, socket, swap, keep, and why.
+    std::string destinyOf(cCreature* hero, uint8_t* pack, uint32_t id)
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        const cObject* item = objects ? objects->object(id) : nullptr;
+        const auto* o = reinterpret_cast<const uint8_t*>(item);
+        const uint32_t type = typeOf(id);
+        if (flagsOf(id) & kQuestItem)
+        {
+            return "keep: a quest item";
+        }
+        if (o && *reinterpret_cast<const uintptr_t*>(o) == kRuneVtable)
+        {
+            return fn<CanUse>(g_canUse)(hero, nullptr, id, 1) ? "use: read (its class's rune)"
+                                                               : "swap: at a combo master (runes are never sold)";
+        }
+        if (healingType(type))
+        {
+            return "use: drunk in fights";
+        }
+        if (extraKind(type) >= 0)
+        {
+            return std::string("use: drunk when due (") + kExtraPotions[extraKind(type)].name + "), past twice the guide's stock sold";
+        }
+        if (socketable(id))
+        {
+            return "socket: at a smith with a free socket (4 kept, the rest sold)";
+        }
+        if (item && isScroll(item))
+        {
+            return g_scrollsTried.count(id) ? "sell: read already or refused" : "use: read";
+        }
+        if (g_storageKeep.count(id))
+        {
+            return "store: kept for another zone's resistances";
+        }
+        if (const int set = worth(id).set; set >= 0 && setsWorn(hero).count(set))
+        {
+            return "keep: a piece of a set worn";
+        }
+        const bool classOk = fn<CanUse>(g_canUse)(hero, nullptr, id, 1) != 0;
+        if (classOk && slotsWant(hero, pack, id))
+        {
+            return "use: a weapon slot";
+        }
+        bool fits = false;
+        if (classOk && bestSlot(hero, id, 0.05f, nullptr, &fits) >= 0)
+        {
+            return fn<CanUse>(g_canUse)(hero, nullptr, id, 0) ? "use: an upgrade to put on" : "keep: an upgrade once wearable";
+        }
+        if (classOk && !fits)
+        {
+            return "sell: of the class, no slot nor use (after 30 min)";
+        }
+        return classOk ? "sell: worse than what is worn" : "sell: not for this class";
+    }
+    // Every 10 min, the items held over 30 min: one line each (once in 2 h) with its destination, and a count by it.
+    void notePackAges(cCreature* hero, uint8_t* pack)
+    {
+        const DWORD now = GetTickCount();
+        static DWORD s_seenAt = 0, s_toldAt = 0;
+        if (s_seenAt && now - s_seenAt < 60000)
+        {
+            return;
+        }
+        s_seenAt = now;
+        std::unordered_set<uint32_t> here;
+        eachItem(pack, [&](uint32_t id, int, int, int) {
+            here.insert(id);
+            g_packSince.try_emplace(id, now);
+        });
+        std::erase_if(g_packSince, [&](const auto& e) { return !here.count(e.first); });
+        if (s_toldAt && now - s_toldAt < 600000)
+        {
+            return;
+        }
+        s_toldAt = now;
+        static std::unordered_map<uint32_t, DWORD> s_itemTold;
+        std::unordered_map<std::string, int> byDest;
+        int old = 0, lines = 0;
+        for (const auto& [id, since] : g_packSince)
+        {
+            if (now - since <= 1800000)
+            {
+                continue;
+            }
+            ++old;
+            const std::string dest = destinyOf(hero, pack, id);
+            ++byDest[dest.substr(0, dest.find(':'))];
+            DWORD& told = s_itemTold[id];
+            if (lines < 12 && (!told || now - told > 7200000))
+            {
+                told = now ? now : 1;
+                ++lines;
+                LOG("Gear: item {:x} (type {:x}) held {} min -> {}", id, typeOf(id), (now - since) / 60000, dest);
+            }
+        }
+        if (old)
+        {
+            std::string list;
+            for (const auto& [k, v] : byDest)
+            {
+                list += (list.empty() ? "" : ", ") + k + " " + std::to_string(v);
+            }
+            LOG("Gear: backpack: {} items held over 30 min ({})", old, list);
+        }
+    }
+
     int wantHealing();
     bool sellOne(cCreature* hero, uint8_t* pack)
     {
@@ -1005,6 +1145,8 @@ namespace
         std::fill(std::begin(g_sellWhy), std::end(g_sellWhy), 0);
         g_sellSeen = 0;
         g_sellPotions = 0;
+        std::fill(std::begin(g_sellExtra), std::end(g_sellExtra), 0);
+        g_sellGems = 0;
         g_keptNow = g_keptFuture = 0;
         const std::unordered_set<uint32_t> future = futureKeep(hero, pack, entryOf(0x11));    // 0x11: the storage
         // With gold to spare (over 500 000: the laboratory's endless gold) the healing potions beyond twice the stock are
@@ -1079,7 +1221,34 @@ namespace
                 // beyond twice the stock go.
                 const bool potion = healingType(typeOf(id));
                 const bool surplusPotion = rich && !fits && potion && ++g_sellPotions > std::max(2 * Mind::now().potionStock, wantHealing());   // never the ones bought (A7, 2026-11-17: bought at 17 of 20, sold over 16)
-                if (!surplusPotion)
+                // No slot for it: each kind its use, the rest sold (the owner, 2026-11-17 14:35). The other potions the
+                // fights drink kept up to the guide's stock; gems up to 4 for the smith; a scroll until read; anything
+                // else held over 30 min with no use goes.
+                bool noUse = false;
+                if (!fits && !potion)
+                {
+                    const uint32_t type = typeOf(id);
+                    const auto since = g_packSince.find(id);
+                    const bool old = since != g_packSince.end() && now - since->second > 1800000;
+                    cObjectManager* objects = cObjectManager::instance();
+                    if (const int k = extraKind(type); k >= 0)
+                    {
+                        noUse = ++g_sellExtra[k] > 2 * kExtraPotions[k].want;
+                    }
+                    else if (socketable(id))
+                    {
+                        noUse = ++g_sellGems > kGemsKept;
+                    }
+                    else if (objects && isScroll(objects->object(id)))
+                    {
+                        noUse = g_scrollsTried.count(id) && old;    // read or refused: kept only a while
+                    }
+                    else
+                    {
+                        noUse = old;
+                    }
+                }
+                if (!surplusPotion && !noUse)
                 {
                     ++g_sellWhy[fits ? 4 : potion ? 5 : 6];
                     return;
@@ -1144,6 +1313,7 @@ namespace
                 fn<AddGold>(g_addGold)(reinterpret_cast<uint8_t*>(hero) + kStats, nullptr, static_cast<int>(price));
                 LOG("Gear: sold {:x} (type {:x}) for {} gold on the {} tab{}", id, typeOf(id), price,
                     page == 0 ? "first" : page == 1 ? "second" : "third", classOk ? "" : " (not for this class)");
+                LOG("Gear: item {:x} (type {:x}) -> sell: {}", id, typeOf(id), destinyOf(hero, pack, id));
                 noteTrade(false, typeOf(id), price, healingType(typeOf(id)) ? "potions sold" : "items sold");
                 if (!weaponNote.empty())
                 {
@@ -1321,17 +1491,6 @@ namespace
     // Mentor (W: a big fight or a boss) and one concentration (R: the arts and combos recharged). Tactics drinks them;
     // none was ever bought. Only with the healing stock full and two healing potions' gold left over, and none
     // dearer than a healing potion's double.
-    struct ExtraPotion
-    {
-        uint32_t types[3];
-        int want;
-        const char* name;
-    };
-    constexpr ExtraPotion kExtraPotions[] = {
-        {{0x1432, 0x1418, 0x1413}, 2, "antidote"},
-        {{0x1431, 0x1417, 0x1412}, 1, "Mentor"},
-        {{0x1434, 0x141A, 0x1415}, 1, "concentration"},
-    };
 
     bool buyExtraPotion(cCreature* hero, uint8_t* pack)
     {
@@ -1553,7 +1712,6 @@ namespace
     // The scrolls in the backpack (cScroll3D, by RTTI): read once each with the use that potions take (Manolito,
     // 2026-11-09: useItem 0x54AA80 accepts their category 0x10; most are books for the encyclopedia, of monsters and
     // the undead among them, which the player wants the agent to know). One a call, while calm.
-    std::unordered_set<uint32_t> g_scrollsTried;
 
     bool isScroll(const cObject* item)
     {
@@ -4635,6 +4793,7 @@ namespace
         {
             closeLeftOpen(hero);
             noteHeld(hero, pack);
+            notePackAges(hero, pack);
             // A laboratory copy's gold never runs out (Cheats: its own switch), by the game's own addGold.
             if (Cheats::on(Cheats::Id::GoldNoEnd))
             {
