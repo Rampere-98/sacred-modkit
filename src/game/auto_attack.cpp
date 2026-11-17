@@ -8644,10 +8644,10 @@ namespace
             // are, so two in any 10 min for good; the five givers of quests 23-24 it was to go for 400-900 tiles off were held
             // 13 h): after 20 min held with five healing potions or more, one try of 15 min, the retreats going on as ever;
             // the hold is back at its end.
+            static DWORD s_heldSince = 0, s_tryUntil = 0;
             if (outmatched(tick) &&
                 std::hypot(static_cast<double>(x - self->x), static_cast<double>(y - self->y)) > 15.0 * kTileSize)
             {
-                static DWORD s_heldSince = 0, s_tryUntil = 0;
                 bool held = true;
                 if (s_tryUntil && static_cast<int>(tick - s_tryUntil) < 0)
                 {
@@ -8669,6 +8669,10 @@ namespace
                     setIntent(Intent::Farm, "outmatched here: farming where the enemies are not above the hero first");
                     return true;
                 }
+            }
+            else
+            {
+                s_heldSince = 0;    // not outmatched (or the goal at hand): the 20 min begin anew at the next episode
             }
             // A goal at hand is no trip into hard ground: the Daemon's start (a tutorial yard, region 59 marked
             // levels 45-80, its main quest 8 tiles off behind a script's blocker) farmed instead, shut in, 14 min.
