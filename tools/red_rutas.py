@@ -6,7 +6,9 @@ at 100 % CPU).
          (MapMemory, read only); each copy keeps writing its own map2.txt, so none overwrites another's.
   red    the shared map + towns (Pueblos.tsv), services (Servicios.tsv), the copies' landmarks (entrances, portals,
          merchants, storage) and way points -> SacredBild-red.txt: nodes and the ways between them, each with its
-         points every few tiles, walked over known walkable tiles only.
+         points every few tiles, walked over known walkable tiles only. With --defpos (and --mundo), the game's
+         doors too: a node at each landing and "P from to cost suffix box" lines, one way each (the step through
+         the door, found live beside the landing); a loader that knows only N and W skips them.
   consulta  a trip as the agent makes it live (nearest nodes, the net between them), to check a net before installing.
 
 Writes where --salida says; putting the files beside the copies is installing (the coordinator's).
@@ -25,11 +27,80 @@ UNKNOWN, WALK, WALL, GATE, SCAN_SHUT = 0, 1, 2, 3, 4
 CHUNK = 32
 MAGIC = b"SBMC"
 VERSION = 1
+WORLD_GRID, SECTOR = 100, 64   # the world's sectors per side, tiles per sector's side
+DOOR_COST = 200                # a door's way in the net (tenths of a tile): the step through and the zone looked for
 
 # Landmark kinds (MapMemory::Mark).
 # Mark::Portal is a jump the hero was seen to make on one layer (mostly a cave's ends), not one of the game's portals:
 # those are the 13 of Portales.tsv (the portals session, 2026-11-16).
 MARK_NAMES = {0: "mercader", 1: "entrada", 2: "salto", 3: "almacen"}
+
+
+def read_world(path):
+    """The surface as the game's files have it (WORLD\\sectors.keyx + sectors.wldx, as src/game/world_tiles.cpp): per
+    tile bit 0 walkable, bits 1-4 the ground; 0xFF no sector. 6400 x 6400, indexed [y, x]."""
+    import zlib
+    key = open(os.path.join(path, "sectors.keyx"), "rb").read()
+    count = struct.unpack_from("<I", key, 4)[0]
+    grid = np.full((WORLD_GRID * SECTOR, WORLD_GRID * SECTOR), 0xFF, dtype=np.uint8)
+    wanted = 0x20 + SECTOR * SECTOR * 0x20   # only the tiles are inflated (361 sectors carry more after them)
+    with open(os.path.join(path, "sectors.wldx"), "rb") as wld:
+        for i in range(count):
+            r = 0x100 + i * 0x300
+            code = struct.unpack_from("<I", key, r + 0x20)[0]
+            off, size = struct.unpack_from("<II", key, r + 0xEC)
+            if code >= WORLD_GRID * WORLD_GRID or not size:
+                continue
+            wld.seek(off)
+            try:
+                d = zlib.decompressobj().decompress(wld.read(size), wanted)
+            except zlib.error:
+                continue
+            if len(d) < wanted:
+                continue
+            t = np.frombuffer(d, np.uint8, SECTOR * SECTOR * 0x20, 0x20).reshape(SECTOR * SECTOR, 0x20)
+            kind = t[:, 0x1F] & 0xF
+            walk = ~((kind == 1) | (kind == 2) | ((t[:, 0x1E] & 8) != 0))
+            sx, sy = code % WORLD_GRID, code // WORLD_GRID
+            grid[sy * SECTOR:(sy + 1) * SECTOR, sx * SECTOR:(sx + 1) * SECTOR] = \
+                (walk.astype(np.uint8) | ((t[:, 0x1F] >> 4) << 1)).reshape(SECTOR, SECTOR)
+    return grid
+
+
+def world_walk(world):
+    return (world != 0xFF) & ((world & 1) == 1)
+
+
+def world_road(world):
+    g = (world >> 1) & 0xF
+    return world_walk(world) & ((g == 0xB) | (g == 0xC) | (g == 7) | (g == 0xD))
+
+
+def read_defpos(bin_dir):
+    """The game's doors on the surface (src/game/teleports.cpp, bin\\TYPE_NPC_<class>\\DefPos.bin, every class merged, the
+    first found wins): (suffix, inside landing, outside landing, both ways). A house's or cave's tpreinz<X> (landing
+    inside) and tprausz<X> (landing outside) go both ways; tpstart_<X> -> tptarget_<X> only one (the start tile is
+    the outside one)."""
+    import glob
+    names = {}
+    for f in sorted(glob.glob(os.path.join(bin_dir, "TYPE_NPC_*", "DefPos.bin"))):
+        d = open(f, "rb").read()
+        i = d.find(b"\0tp")
+        while 0 <= i and i + 1 + 0x48 <= len(d):
+            s = i + 1
+            e = d.find(b"\0", s, s + 0x40)
+            if e > s:
+                x, y = struct.unpack_from("<ii", d, s + 0x40)
+                if 0 < x < 8192 and 0 < y < 8192:
+                    names.setdefault(d[s:e].decode("latin-1"), (x, y))
+            i = d.find(b"\0tp", i + 1)
+    doors = []
+    for name, xy in names.items():
+        if name.startswith("tpreinz") and "tprausz" + name[7:] in names:
+            doors.append((name[7:], xy, names["tprausz" + name[7:]], True))
+        elif name.startswith("tptarget_") and "tpstart_" + name[9:] in names:
+            doors.append((name[9:], xy, names["tpstart_" + name[9:]], False))
+    return sorted(doors)
 
 
 def kind_walkable(kind):
@@ -259,6 +330,8 @@ def dijkstra(grid, sx, sy, limit, targets):
     """From (sx, sy) over the grid, up to cost `limit`: for each target tile reached, (cost, path tiles)."""
     from scipy.sparse.csgraph import dijkstra as sp_dijkstra
     g = graph(grid)
+    if not grid.inside(sx, sy):
+        return {}   # a door's landing placed by the world files, off the known map
     src = int(grid.idx[sy - grid.y0, sx - grid.x0])
     if src < 0:
         return {}
@@ -343,6 +416,53 @@ def cmd_red(a):
         taken[cell] = len(nodes)
         nodes.append((name, kind, s[0], s[1]))
     print(f"nodes: {len(nodes)} ({sum(1 for n in nodes if n[1] != 'paso')} named), {len(unsnapped)} with no known walkable tile near")
+    # The game's doors (A5, 2026-11-17: quests 701, 901 and 202 left at 3176,1930, cave 17.2's door, its goal 4101,624
+    # inside, an interior placed far off on the map that no walk reaches): a node at each landing (inside, a cave never
+    # walked, placed by the world files) and a way through the door, "P from to cost suffix box" (box: the inside's
+    # walkable part by the world files, x0,y0,x1,y1, for knowing a goal is in there).
+    doors = []
+    if a.defpos:
+        world = read_world(a.mundo) if a.mundo else None
+        if world is not None:
+            from scipy import ndimage
+            walkable = world_walk(world)
+            lab, _ = ndimage.label(walkable, structure=np.ones((3, 3), dtype=bool))
+            part_size = np.bincount(lab.ravel())
+            part_box = ndimage.find_objects(lab)
+
+        def place(x, y, name):
+            s = grid.snap(x, y, 8)
+            if not s and world is not None:
+                y0_, x0_ = max(y - 8, 0), max(x - 8, 0)
+                ys, xs = np.nonzero(walkable[y0_:y + 9, x0_:x + 9])
+                if len(xs):
+                    k = int(np.argmin((xs + x0_ - x) ** 2 + (ys + y0_ - y) ** 2))
+                    s = (int(xs[k] + x0_), int(ys[k] + y0_))
+            if not s:
+                return None, None
+            for k, n in enumerate(nodes):
+                if max(abs(n[2] - s[0]), abs(n[3] - s[1])) <= 6:
+                    return k, s
+            nodes.append((name, "puerta", s[0], s[1]))
+            return len(nodes) - 1, s
+
+        placed = 0
+        for suffix, (ix, iy), (ox, oy), both in read_defpos(a.defpos):
+            vi, si = place(ix, iy, "dentro:" + suffix)
+            vo, so = place(ox, oy, "fuera:" + suffix)
+            if vi is None or vo is None or vi == vo:
+                continue
+            box = "-"
+            if world is not None:
+                p = lab[si[1], si[0]]
+                if p and part_size[p] < 200000:   # an interior, not the open land
+                    sl = part_box[p - 1]
+                    box = f"{sl[1].start},{sl[0].start},{sl[1].stop - 1},{sl[0].stop - 1}"
+            doors.append((vo, vi, suffix, box))
+            if both:
+                doors.append((vi, vo, suffix, box))
+            placed += 1
+        print(f"doors: {placed} placed ({len(doors)} ways through), {len(nodes)} nodes now")
     # Ways: from each node to the others within `radio` tiles, along known walkable tiles; the k cheapest kept per
     # node (both ways count).
     pos = np.array([(n[2], n[3]) for n in nodes])
@@ -375,6 +495,9 @@ def cmd_red(a):
     for i, j in edges:
         deg[i] += 1
         deg[j] += 1
+    for i, j, _, _ in doors:
+        deg[i] += 1
+        deg[j] += 1
     out = os.path.join(a.salida, "SacredBild-red.txt")
     tmp = out + ".tmp"
     # Nodes with no way are left out (renumbered: the game wants ids 0, 1, 2...). Live, every node near an end costs one
@@ -391,6 +514,10 @@ def cmd_red(a):
             f.write(f"N {new_id[v]} 0 {x} {y} {kind} {name.replace(' ', '_')}\n")
         for (i, j), (c, pts) in sorted(edges.items(), key=lambda e: (new_id[e[0][0]], new_id[e[0][1]])):
             f.write(f"W {new_id[i]} {new_id[j]} {c} " + " ".join(f"{x},{y}" for x, y in pts) + "\n")
+        # A door, one way: from a landing to the other's (the game's own jump, the zone to step on found live beside
+        # the landing: Teleports::caveTriggerNear, the stairs anchors).
+        for i, j, suffix, box in doors:
+            f.write(f"P {new_id[i]} {new_id[j]} {DOOR_COST} {suffix.replace(' ', '_')} {box}\n")
     os.replace(tmp, out)
     # Connected parts: a net in pieces leaves trips between them to the old ways.
     parent = list(range(len(nodes)))
@@ -401,7 +528,7 @@ def cmd_red(a):
             v = parent[v]
         return v
 
-    for i, j in edges:
+    for i, j in list(edges) + [(d[0], d[1]) for d in doors]:
         parent[root(i)] = root(j)
     parts = {}
     for v in range(len(nodes)):
@@ -433,6 +560,9 @@ def read_net(path):
                 pts = [tuple(map(int, q.split(","))) for q in p[4:]]
                 adj.setdefault(i, []).append((j, c, pts))
                 adj.setdefault(j, []).append((i, c, pts[::-1]))
+            elif p[0] == "P":
+                i, j, c = int(p[1]), int(p[2]), int(p[3])
+                adj.setdefault(i, []).append((j, c, [nodes[i][:2], nodes[j][:2]]))
     return nodes, adj
 
 
@@ -443,6 +573,7 @@ def box_route(grid, ax, ay, bx, by, margin, unknown):
     x0, y0 = min(ax, bx) - margin, min(ay, by) - margin
     w, h = abs(bx - ax) + 2 * margin + 1, abs(by - ay) + 2 * margin + 1
     step = np.full((h, w), unknown, dtype=np.int32)
+    known = np.zeros((h, w), dtype=bool)
     gx0, gy0 = max(x0, grid.x0), max(y0, grid.y0)
     gx1, gy1 = min(x0 + w, grid.x0 + grid.w), min(y0 + h, grid.y0 + grid.h)
     if gx1 > gx0 and gy1 > gy0:
@@ -451,6 +582,20 @@ def box_route(grid, ax, ay, bx, by, margin, unknown):
         sub[c != UNKNOWN] = 0
         sub[c == WALK] = 10
         sub[c == GATE] = 40
+        known[gy0 - y0:gy1 - y0, gx0 - x0:gx1 - x0] = c != UNKNOWN
+    world = getattr(grid, "world", None)
+    if world is not None:
+        # As live on the surface: a road by the world files 6 wherever not seen blocked, ground never seen 14 when the
+        # files say walkable, else no way.
+        wx0, wy0, wx1, wy1 = max(x0, 0), max(y0, 0), min(x0 + w, world.shape[1]), min(y0 + h, world.shape[0])
+        fw = np.zeros((h, w), dtype=bool)
+        fr = np.zeros((h, w), dtype=bool)
+        if wx1 > wx0 and wy1 > wy0:
+            part = world[wy0:wy1, wx0:wx1]
+            fw[wy0 - y0:wy1 - y0, wx0 - x0:wx1 - x0] = world_walk(part)
+            fr[wy0 - y0:wy1 - y0, wx0 - x0:wx1 - x0] = world_road(part)
+        step[~known] = np.where(fw[~known], 14, 0)
+        step[fr & (step > 0)] = 6
     step[ay - y0, ax - x0] = 10
     step[by - y0, bx - x0] = max(step[by - y0, bx - x0], 10)
     start, goal = (ay - y0) * w + (ax - x0), (by - y0) * w + (bx - x0)
@@ -534,6 +679,8 @@ def trip(nodes, adj, grid, sx, sy, gx, gy, reach=120, tries=8, keep=4, margin=24
 def cmd_consulta(a):
     keys, cls = read_common(a.comun)
     grid = Grid(keys, cls, 0)
+    if a.mundo:
+        grid.world = read_world(a.mundo)
     nodes, adj = read_net(a.red)
     for q in a.viajes:
         s, g = q.split(":")
@@ -566,8 +713,11 @@ def main():
     r.add_argument("--radio", type=int, default=110, help="how far a way from a node reaches, tiles")
     r.add_argument("--vecinos", type=int, default=8)
     r.add_argument("--cada", type=int, default=8, help="a way's point every so many tiles")
+    r.add_argument("--defpos", help="the game's bin folder: its doors (TYPE_NPC_*\\DefPos.bin) as ways through")
+    r.add_argument("--mundo", help="a copy's WORLD folder: the doors' landings placed where no copy walked")
     r.add_argument("--salida", required=True)
     q = sub.add_parser("consulta")
+    q.add_argument("--mundo", help="a copy's WORLD folder: unknown tiles judged by it, as live")
     q.add_argument("--comun", required=True)
     q.add_argument("--red", required=True)
     q.add_argument("--intentos", type=int, default=8, help="nodes tried near each end (RouteNet kTry)")
