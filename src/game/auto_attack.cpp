@@ -1169,7 +1169,14 @@ namespace
             {
                 return true;
             }
-            g_doorUse = {id, now, false};
+            // Noted only when the order goes out: through the game's cursor (AgentCursor) this first call only moves the cursor
+            // onto the door and the click comes in a second call (g_cursorFiring); noted here at the first, the second was taken
+            // for a repeat and no order was ever sent (the stuck solver, 2026-11-17, A7: «clicked 2.5 s ago: still shut» on
+            // every door after the 17:55 install, the hero's order never in mode 1 in a 0.1 s watch of its order fields).
+            if (g_cursorFiring || !AgentCursor::active())
+            {
+                g_doorUse = {id, now, false};
+            }
         }
         UseOrder order;
         order.target = id;
