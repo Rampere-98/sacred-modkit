@@ -990,6 +990,63 @@ namespace
         reinterpret_cast<Handle>(vt[6])(hero, nullptr, ev);
     }
 
+    // A door (DOOR_* 0x1612..0x1697, S_DOOR 0x1465) or a lever (0x17CD): the objects a click uses through a trigger.
+    bool isDoorObject(const cObject* o)
+    {
+        if (!o)
+        {
+            return false;
+        }
+        const uint16_t type = *reinterpret_cast<const uint16_t*>(reinterpret_cast<const uint8_t*>(o) + 0x10);
+        return (type >= 0x1612 && type <= 0x1697) || type == 0x1465 || type == 0x17CD;
+    }
+    // The door last clicked: 4 s before it may be clicked again, its state told once 2.5 s after the click.
+    struct DoorUse
+    {
+        uint32_t id = 0;
+        DWORD at = 0;
+        bool told = true;
+    } g_doorUse;
+    // The door's trigger record (AGENT_ADDRESSES «Puertas y palancas»): +0xA bit 0 open, 0x8000 locked by a script or lever,
+    // +0xC the key it asks. False when the record cannot be read.
+    bool doorTrigger(const cObject* o, uint16_t& state, uint32_t& key)
+    {
+        if (const uintptr_t holder = *reinterpret_cast<const uintptr_t*>(0xAD5C40))
+        {
+            if (const uintptr_t world = *reinterpret_cast<const uintptr_t*>(holder))
+            {
+                const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(world + 0x268);
+                const uintptr_t end = *reinterpret_cast<const uintptr_t*>(world + 0x26C);
+                const uint32_t index = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(o) + 0x34);
+                const uintptr_t trig = begin + static_cast<uintptr_t>(index) * 0x10;
+                if (begin && end > begin && index < 0x100000 && trig + 0x10 <= end)
+                {
+                    state = *reinterpret_cast<const uint16_t*>(trig + 0xA);
+                    key = *reinterpret_cast<const uint32_t*>(trig + 0xC);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    void doorUseCheck(DWORD now)
+    {
+        if (!g_doorUse.id || g_doorUse.told || now - g_doorUse.at < 2500)
+        {
+            return;
+        }
+        g_doorUse.told = true;
+        cObjectManager* objects = cObjectManager::instance();
+        const cObject* o = objects ? objects->object(g_doorUse.id) : nullptr;
+        uint16_t state = 0;
+        uint32_t key = 0;
+        if (o && doorTrigger(o, state, key))
+        {
+            LOG("AutoAttack: door {:x} clicked {:.1f} s ago: now {} (trigger state {:x}, key {:x}, at {},{})", g_doorUse.id,
+                (now - g_doorUse.at) / 1000.0, (state & 1) ? "OPEN" : "still shut", state, key, o->x / 53, o->y / 53);
+        }
+    }
+
     // Orders the creature the mouse commands (the hero, or its mount) to attack, pick up or open `id`, as a click
     // on it does.
     bool attack(uint32_t id);
@@ -1100,6 +1157,19 @@ namespace
         if (!target->asCreature() && walkFirst(self, target->x, target->y))
         {
             return true;
+        }
+        // A door is used once, from the use point the game walks the hero to (Manolito, block BU, 2026-11-17: the use
+        // alternates, and 1 s after a change the trigger holds 0x4000 and refuses another, so a second click inside that
+        // second or just after it shuts the door again; A4's ed1, 1950,3270, was «used» again and again and never read open):
+        // the same door is not clicked again for 4 s, and its state is told 2.5 s after the click.
+        if (!target->asCreature() && isDoorObject(target))
+        {
+            const DWORD now = GetTickCount();
+            if (g_doorUse.id == id && now - g_doorUse.at < 4000)
+            {
+                return true;
+            }
+            g_doorUse = {id, now, false};
         }
         UseOrder order;
         order.target = id;
@@ -7471,48 +7541,6 @@ namespace
             if (AimAssist::findObject(g_doorRange, &acceptDoor, nullptr, door))
             {
                 g_doorTried[door.id] = now;
-                // A door with hit points that a click does not open (the stuck solver, 2026-11-17, A4: the Lentil Liqueur 15036
-                // inside a house, its door ed1 at 1950,3270, type 0x161a, 3618 of 4549 health, shut, no key and no script
-                // lock; «door used, as a click on it» every 30-90 s for 10+ min and its health never moved): its health is
-                // told, and after 3 clicks with it unchanged the quest whose goal it shuts is set aside (30 min) with the
-                // reason, as the 20 min of the order would a long time after. Breaking it needs an order that attacks an
-                // object, not the click's «use» (asked of Manolito).
-                {
-                    struct DoorTry
-                    {
-                        int tries = 0;
-                        int32_t hp = 0;
-                    };
-                    static std::unordered_map<uint32_t, DoorTry> s_doors;
-                    cObjectManager* om = cObjectManager::instance();
-                    const uint8_t* d = om ? reinterpret_cast<const uint8_t*>(om->object(door.id)) : nullptr;
-                    const int32_t hp = d ? *reinterpret_cast<const int32_t*>(d + 0x4D8) : 0;
-                    const int32_t maxHp = d ? *reinterpret_cast<const int32_t*>(d + 0x4D4) : 0;
-                    if (maxHp > 0 && hp > 0 && hp <= maxHp)
-                    {
-                        DoorTry& t = s_doors[door.id];
-                        if (++t.tries == 1)
-                        {
-                            t.hp = hp;
-                            LOG("AutoAttack: door {:x} has hit points ({} of {}): a click on it is tried first", door.id, hp, maxHp);
-                        }
-                        else if (t.tries >= 4 && hp >= t.hp)
-                        {
-                            LOG("AutoAttack: door {:x} still shut with {} of {} hit points after {} clicks: neither opened nor "
-                                "damaged by a click, the quest behind it is set aside",
-                                door.id, hp, maxHp, t.tries);
-                            if (g_orderPick.number > 0 && g_orderPick.kind == GoalKind::Journal)
-                            {
-                                orderSkip(g_orderPick.number, now, "its way is a door a click neither opens nor breaks");
-                            }
-                            t.tries = 0;
-                        }
-                        else
-                        {
-                            t.hp = std::min(t.hp, hp);
-                        }
-                    }
-                }
                 LOG("AutoAttack: stuck guard: a door near ({:x}): used, as a click on it", door.id);
                 Findings::note("door", self->x, self->y, "stuck: door {:x} used", door.id);
                 attack(door.id);
@@ -11565,6 +11593,7 @@ void AutoAttack::onFrame()
     }
     if (foreground && !Controller::drives() && heroAlive())
     {
+        doorUseCheck(now);
         Gear::onFrame(now, !g_collecting && !g_target && !g_pending && !g_retreatUntil && !Tactics::busy(now));
         HeroBuild::onFrame(now, !g_target && !g_retreatUntil && !Tactics::busy(now));
     }
