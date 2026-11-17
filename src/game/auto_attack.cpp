@@ -9059,7 +9059,9 @@ namespace
                     const bool goalInPocket = (Whereabouts::reachable(gtx, gty) != 1 &&
                                                Whereabouts::nearestReachable(gtx, gty, nx, ny) &&
                                                std::max(std::abs(nx - gtx), std::abs(ny - gty)) <= 4) ||
-                                              (layer == 0 && RouteNet::sameInterior(hx, hy, gtx, gty));
+                                              (layer == 0 && (RouteNet::sameInterior(hx, hy, gtx, gty) ||
+                                                              (Lore::questKind() == Lore::QuestKind::Kill &&
+                                                               RouteNet::insideAtDoor(hx, hy, gtx, gty))));
                     if (goalInPocket)
                     {
                         static uint64_t s_toldPocket = 0;
