@@ -377,13 +377,20 @@ def cmd_red(a):
         deg[j] += 1
     out = os.path.join(a.salida, "SacredBild-red.txt")
     tmp = out + ".tmp"
+    # Nodes with no way are left out (renumbered: the game wants ids 0, 1, 2...). Live, every node near an end costs one
+    # of the few stretch searches and may be kept as an end, and one with no way is a dead end (2026-11-17: Hohenwall's
+    # smith and merchant, snapped to a line of 23 tiles A2 walked with nothing known around, took two of the four
+    # tries near them).
+    kept = [v for v in range(len(nodes)) if deg[v] > 0]
+    new_id = {v: k for k, v in enumerate(kept)}
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("# SacredBild route net (tools/red_rutas.py red): N id layer x y kind name; W a b cost x,y x,y ...\n"
                 "# kind portal: the game's portal (name portal<id>:zone); salto: a jump seen on one layer\n")
-        for i, (name, kind, x, y) in enumerate(nodes):
-            f.write(f"N {i} 0 {x} {y} {kind} {name.replace(' ', '_')}\n")
-        for (i, j), (c, pts) in sorted(edges.items()):
-            f.write(f"W {i} {j} {c} " + " ".join(f"{x},{y}" for x, y in pts) + "\n")
+        for v in kept:
+            name, kind, x, y = nodes[v]
+            f.write(f"N {new_id[v]} 0 {x} {y} {kind} {name.replace(' ', '_')}\n")
+        for (i, j), (c, pts) in sorted(edges.items(), key=lambda e: (new_id[e[0][0]], new_id[e[0][1]])):
+            f.write(f"W {new_id[i]} {new_id[j]} {c} " + " ".join(f"{x},{y}" for x, y in pts) + "\n")
     os.replace(tmp, out)
     # Connected parts: a net in pieces leaves trips between them to the old ways.
     parent = list(range(len(nodes)))
@@ -400,7 +407,7 @@ def cmd_red(a):
     for v in range(len(nodes)):
         parts.setdefault(root(v), []).append(v)
     sizes = sorted((len(p) for p in parts.values()), reverse=True)
-    print(f"net: {len(nodes)} nodes, {len(edges)} ways, {int((deg == 0).sum())} nodes with none -> {out}")
+    print(f"net: {len(kept)} nodes, {len(edges)} ways ({int((deg == 0).sum())} nodes with none left out) -> {out}")
     print(f"  connected parts: {len(parts)}, the largest {sizes[:6]}")
     print(f"  ways past a wall's corner (a diagonal the live grid may refuse): {len(corner_ways)}"
           + (": " + ", ".join(f"{nodes[i][2]},{nodes[i][3]}-{nodes[j][2]},{nodes[j][3]}" for i, j in sorted(corner_ways)[:12]) if corner_ways else ""))
