@@ -7471,6 +7471,48 @@ namespace
             if (AimAssist::findObject(g_doorRange, &acceptDoor, nullptr, door))
             {
                 g_doorTried[door.id] = now;
+                // A door with hit points that a click does not open (the stuck solver, 2026-11-17, A4: the Lentil Liqueur 15036
+                // inside a house, its door ed1 at 1950,3270, type 0x161a, 3618 of 4549 health, shut, no key and no script
+                // lock; «door used, as a click on it» every 30-90 s for 10+ min and its health never moved): its health is
+                // told, and after 3 clicks with it unchanged the quest whose goal it shuts is set aside (30 min) with the
+                // reason, as the 20 min of the order would a long time after. Breaking it needs an order that attacks an
+                // object, not the click's «use» (asked of Manolito).
+                {
+                    struct DoorTry
+                    {
+                        int tries = 0;
+                        int32_t hp = 0;
+                    };
+                    static std::unordered_map<uint32_t, DoorTry> s_doors;
+                    cObjectManager* om = cObjectManager::instance();
+                    const uint8_t* d = om ? reinterpret_cast<const uint8_t*>(om->object(door.id)) : nullptr;
+                    const int32_t hp = d ? *reinterpret_cast<const int32_t*>(d + 0x4D8) : 0;
+                    const int32_t maxHp = d ? *reinterpret_cast<const int32_t*>(d + 0x4D4) : 0;
+                    if (maxHp > 0 && hp > 0 && hp <= maxHp)
+                    {
+                        DoorTry& t = s_doors[door.id];
+                        if (++t.tries == 1)
+                        {
+                            t.hp = hp;
+                            LOG("AutoAttack: door {:x} has hit points ({} of {}): a click on it is tried first", door.id, hp, maxHp);
+                        }
+                        else if (t.tries >= 4 && hp >= t.hp)
+                        {
+                            LOG("AutoAttack: door {:x} still shut with {} of {} hit points after {} clicks: neither opened nor "
+                                "damaged by a click, the quest behind it is set aside",
+                                door.id, hp, maxHp, t.tries);
+                            if (g_orderPick.number > 0 && g_orderPick.kind == GoalKind::Journal)
+                            {
+                                orderSkip(g_orderPick.number, now, "its way is a door a click neither opens nor breaks");
+                            }
+                            t.tries = 0;
+                        }
+                        else
+                        {
+                            t.hp = std::min(t.hp, hp);
+                        }
+                    }
+                }
                 LOG("AutoAttack: stuck guard: a door near ({:x}): used, as a click on it", door.id);
                 Findings::note("door", self->x, self->y, "stuck: door {:x} used", door.id);
                 attack(door.id);
