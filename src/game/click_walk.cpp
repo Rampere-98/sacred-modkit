@@ -215,6 +215,42 @@ namespace
     };
 
     Grid g_grid;
+
+    // Tiles the game's path finder found no way over, kept 10 min across walks (the stuck solver, 2026-11-17, A3 at 2972,2205:
+    // a wall a tile thick, x=2971 from y=2186 to 2214, that the tile test lets through; each walk planned across it, the
+    // first leg two tiles west, the hero still for 25 s, «blocked», the goal left, and the next walk forgot the tiles
+    // (avoid.clear) and planned the same leg; 2+ min on the spot, the way round 10 tiles south).
+    struct Refused
+    {
+        Cell c;
+        uint8_t layer;
+        DWORD at;
+    };
+    std::vector<Refused> g_refused;
+
+    void keepRefused(const Cell& c, uint8_t layer)
+    {
+        if (g_refused.size() > 600)
+        {
+            g_refused.erase(g_refused.begin(), g_refused.begin() + 300);
+        }
+        g_refused.push_back({c, layer, GetTickCount()});
+    }
+
+    // The avoid list of a new walk: those the game refused lately on this layer, not nothing.
+    void restoreAvoid(uint8_t layer)
+    {
+        const DWORD now = GetTickCount();
+        std::erase_if(g_refused, [now](const Refused& r) { return now - r.at > 600000; });
+        g_grid.avoid.clear();
+        for (const Refused& r : g_refused)
+        {
+            if (r.layer == layer)
+            {
+                g_grid.avoid.push_back(r.c);
+            }
+        }
+    }
     Route g_route;
     bool g_routed = false;                      // the far walk follows g_route
     // A click within the path finders' grid goes to the game unchanged: its path finder knows doors and stairs into
@@ -732,7 +768,7 @@ namespace
                 {
                     // The agent's walk on its own route, not the game's path finder (which keeps the doors and stairs
                     // into houses: when no route is found on the hero's layer, the order goes to the game as it is).
-                    g_grid.avoid.clear();
+                    restoreAvoid(layerOf(creature));
                     g_grid.layer = layerOf(creature);
                     const Cell from = cellOf(creature->x, creature->y);
                     Cell end{};
@@ -772,7 +808,7 @@ namespace
                 {
                     g_goalX = order->x;
                     g_goalY = order->y;
-                    g_grid.avoid.clear();
+                    restoreAvoid(layerOf(creature));
                     g_grid.layer = layerOf(creature);
                     const Cell from = cellOf(creature->x, creature->y);
                     Cell end{};
@@ -994,6 +1030,10 @@ namespace
                 for (size_t i = first; i < last; ++i)
                 {
                     g_grid.avoid.push_back(g_route.cells[i]);
+                    if (g_route.legTiles <= kMinLegTiles)
+                    {
+                        keepRefused(g_route.cells[i], layerOf(hero));   // the shortest legs refused too: kept across walks
+                    }
                 }
             }
             g_netWorking = false;
@@ -1095,7 +1135,7 @@ namespace
             }
             // The game found no way: a route over the loaded sectors, else legs turned aside.
             g_native = false;
-            g_grid.avoid.clear();
+            restoreAvoid(layerOf(hero));
             g_grid.layer = layerOf(hero);
             const Cell from = cellOf(hero->x, hero->y);
             Cell end{};
@@ -1128,7 +1168,7 @@ namespace
         {
             g_netAskedAt = now;
             g_netWorking = false;
-            g_grid.avoid.clear();
+            restoreAvoid(layerOf(hero));
             g_grid.layer = layerOf(hero);
             const Cell from = cellOf(hero->x, hero->y);
             Cell end{};
