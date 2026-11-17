@@ -9052,9 +9052,14 @@ namespace
                     // not outside, nothing to get out for (the quests' session, 2026-11-16: the Tree of Life's inside,
                     // R08NQ01, is a pocket of the surface at 5064..5096 x 344..370; A3 got in at 19:06:01 with the
                     // goal 5087,358 inside it and was led out by the way it came 18 s later, «the quest outside»).
-                    const bool goalInPocket = Whereabouts::reachable(gtx, gty) != 1 &&
-                                              Whereabouts::nearestReachable(gtx, gty, nx, ny) &&
-                                              std::max(std::abs(nx - gtx), std::abs(ny - gty)) <= 4;
+                    // Or both in one interior by the net's box of it (A5, 2026-11-17 21:20:38: in cave 5.1 at 5064,366,
+                    // the goal 5087,358 in a house inside it behind a shut door, the nearest reachable tile over 4
+                    // off, and the hero led out by the door it had come in by 1 s before).
+                    const int hx = static_cast<int>(self->x / kTileSize), hy = static_cast<int>(self->y / kTileSize);
+                    const bool goalInPocket = (Whereabouts::reachable(gtx, gty) != 1 &&
+                                               Whereabouts::nearestReachable(gtx, gty, nx, ny) &&
+                                               std::max(std::abs(nx - gtx), std::abs(ny - gty)) <= 4) ||
+                                              (layer == 0 && RouteNet::sameInterior(hx, hy, gtx, gty));
                     if (goalInPocket)
                     {
                         static uint64_t s_toldPocket = 0;

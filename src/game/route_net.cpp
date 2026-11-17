@@ -712,6 +712,24 @@ bool RouteNet::insideOf(int landX, int landY, int x, int y)
     return false;
 }
 
+bool RouteNet::sameInterior(int ax, int ay, int bx, int by)
+{
+    const std::lock_guard lock(g_lock);
+    if (!g_loaded)
+    {
+        load();
+    }
+    for (const Door& d : g_doors)
+    {
+        if (d.box && ax >= d.x0 && ax <= d.x1 && ay >= d.y0 && ay <= d.y1 && bx >= d.x0 && bx <= d.x1 && by >= d.y0 &&
+            by <= d.y1)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void RouteNet::doorStep(int layer, int landX, int landY, int heroX, int heroY, int& stepX, int& stepY)
 {
     stepX = landX;
