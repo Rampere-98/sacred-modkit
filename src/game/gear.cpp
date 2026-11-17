@@ -2723,6 +2723,9 @@ namespace
     using UiShow = void(__fastcall*)(uint8_t* ui, void*, int show);
     int g_swapsDone = 0;
     DWORD g_lastSwapOverAt = 0;    // when the last visit to a combo master ended (the trips for 3 runes were 7 min apart)
+    // Visits in a row with no swap made (the coordinator, 2026-11-17: A7 to the combo master 19 times in 90 min, «0 done,
+    // 42 left» at each, 16 min of its time): the next waits 30 min, 60 after two.
+    int g_swapsAtLastOver = 0, g_swapVisitsFailed = 0;
     bool g_masterDone = false;     // the swaps over with the window still open (A2 2026-11-12: show(0) left it open)
 
     // A craftsman's window is worked in only with a craftsman of that trade beside the hero (the player, 2026-11-13:
@@ -3222,6 +3225,13 @@ namespace
         fn<UiShow>((*reinterpret_cast<uintptr_t* const*>(master))[0x24 / 4])(master, nullptr, 0);
         g_foreignRunes = countForeignRunes(hero, pack);
         g_lastSwapOverAt = GetTickCount();
+        g_swapVisitsFailed = g_swapsDone == g_swapsAtLastOver ? g_swapVisitsFailed + 1 : 0;
+        g_swapsAtLastOver = g_swapsDone;
+        if (g_swapVisitsFailed)
+        {
+            LOG("Gear: no rune swapped at this visit ({} in a row): the combo master gone to again in {} min",
+                g_swapVisitsFailed, g_swapVisitsFailed >= 2 ? 60 : 30);
+        }
         g_masterDone = true;
         return true;
     }
@@ -4922,6 +4932,10 @@ bool Gear::wantsRuneSwap()
     // 500 for the swap and as much kept for potions.
     // 5 runes, or 3 once 10 min have passed since the last visit (A7 2026-11-14: two trips of 29 and 38 tiles in 7 min,
     // each fight dropping runes).
+    if (g_swapVisitsFailed && GetTickCount() - g_lastSwapOverAt < (g_swapVisitsFailed >= 2 ? 3600000u : 1800000u))
+    {
+        return false;
+    }
     return g_ready && g_settings.runes && gold >= 1000 &&
            (g_foreignRunes >= 5 || (g_foreignRunes >= 3 && (!g_lastSwapOverAt || GetTickCount() - g_lastSwapOverAt > 600000)));
 }

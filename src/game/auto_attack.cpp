@@ -3606,6 +3606,9 @@ namespace
         double distance = 0.0;
         bool blocked = false;
         int rank = 0;               // its place in kQuestOrder (the campaign's order), after the list if not in it
+        double way = 0.0;           // the way's length to it (world units), with none of the weights on distance
+        bool band = false;          // in the hero's level band and not chained after an undone one (questTarget)
+        double cost = 0.0;          // in the band: tiles of way + 15 a place after the band's first in the order
     };
 
     // The quest's number: DQ_<n> is n; R<rr>NQ<qq> is 100*rr + qq, but region 1's are 150 + qq (the journal's own
@@ -3807,6 +3810,19 @@ namespace
             }
         }
         return kOrderCount;
+    }
+    // The level band (the owner, 2026-11-17 13:00, «los 2 criterios son buenos»: the campaign's order and the quests
+    // of the hero's level, the nearest first): quests of level hero - 5 to hero + 2 are taken by way and place in the
+    // order together; the rest by the order as before.
+    constexpr int kBandBelow = 5, kBandAbove = 2;
+    bool inLevelBand(int rank, int heroLv)
+    {
+        if (heroLv <= 0 || rank < 0 || rank >= kOrderCount || kQuestOrder[rank].level <= 0)
+        {
+            return false;
+        }
+        const int lv = kQuestOrder[rank].level;
+        return lv >= heroLv - kBandBelow && lv <= heroLv + kBandAbove;
     }
     // Quests skipped (gone for 20 min, 40 for an escort or deadline, with no step done nor nearer; a giver not reached
     // in 20 min): 30 min the first time; skipped twice in a row, at the end of the list until something changes, the
@@ -4074,6 +4090,8 @@ namespace
                 why = goal->blocked ? "no way to it for now (or given up after a failure)"
                       : orderSkipped(n, now) ? "gone for long with no step done nor nearer: tried again later"
                       : goal->tier < 0 ? "held: left for last (it breaks another quest)"
+                      : front && front->band && goal->tier == front->tier
+                          ? "the level band's cheaper one first (way and place together; done after)"
                                        : "a quest that cannot wait goes first (an escort, a deadline, one lost if left)";
             }
             else if (tooLow(n))
@@ -4616,13 +4634,17 @@ namespace
                 g.tier = std::min(0, questPriority(g.number));
                 g_questBook.push_back(g);
             }
-            // And any other within 40 tiles: a goal on the way (the coordinator, 2026-11-17), taken in passing.
+            // And any other within 40 tiles: a goal on the way (the coordinator, 2026-11-17), taken in passing; and up to
+            // 8 more of the hero's level band, for the band's choice by way and place (questTarget).
+            int bandMore = 0;
             for (size_t i = 3; i < nearest.size(); ++i)
             {
-                if (nearest[i].first > 40.0)
+                const bool inBand = inLevelBand(orderRank(nearest[i].second->number), heroLv);
+                if (nearest[i].first > 40.0 && !(inBand && bandMore < 8))
                 {
                     continue;
                 }
+                bandMore += nearest[i].first > 40.0;
                 QuestGoal g{GoalKind::Giver};
                 g.x = static_cast<int32_t>((nearest[i].second->x + 0.5) * kTileSize);
                 g.y = static_cast<int32_t>((nearest[i].second->y + 0.5) * kTileSize);
@@ -4668,6 +4690,7 @@ namespace
         for (QuestGoal& g : g_questBook)
         {
             g.distance = wayLength(heroX, heroY, g.x, g.y);
+            g.way = g.distance;
             g.rank = orderRank(g.number);
             if (g.rank < 0)
             {
@@ -4754,6 +4777,54 @@ namespace
         // comes (an escort just taken): never left for another of its tier by distance or place in the order (the
         // coordinator, 2026-11-17: A3 501 -> 203 -> 402 -> 501, A5 202 <-> 701). A quest is known by its number (its
         // goal's tile moves with its steps and its escorted one), another goal by its creature and tile.
+        // The level band: each goal of a quest of the hero's level band (a giver or a sign of one not taken yet only if
+        // no quest before it in the order with the same giver is undone: a chain is done in its order), costed by its
+        // way plus 150 tiles every 10 places after the band's first, so the order still weighs. None in the band: the
+        // order's first as before (farming for its level if short of it). Those far under the hero are left to the
+        // order and the goals on the way.
+        int bandFirst = kOrderCount;
+        for (QuestGoal& g : g_questBook)
+        {
+            g.band = !g.blocked && g.rank < kOrderCount && inLevelBand(g.rank, heroLevel);
+            if (g.band && g.kind != GoalKind::Journal && g.number > 0)
+            {
+                const QuestGiver* mine = nullptr;
+                for (const QuestGiver& q : kQuestGivers)
+                {
+                    if (q.number == g.number)
+                    {
+                        mine = &q;
+                        break;
+                    }
+                }
+                for (const QuestGiver& q : kQuestGivers)
+                {
+                    if (!mine || q.number == g.number || std::abs(q.x - mine->x) > 3 || std::abs(q.y - mine->y) > 3)
+                    {
+                        continue;
+                    }
+                    const int r = orderRank(q.number);
+                    if (r >= 0 && r < g.rank &&
+                        std::find(g_doneNumbers.begin(), g_doneNumbers.end(), q.number) == g_doneNumbers.end() &&
+                        std::find(g_failedNow.begin(), g_failedNow.end(), q.number) == g_failedNow.end())
+                    {
+                        g.band = false;     // chained after q, not done
+                        break;
+                    }
+                }
+            }
+            if (g.band)
+            {
+                bandFirst = std::min(bandFirst, g.rank);
+            }
+        }
+        for (QuestGoal& g : g_questBook)
+        {
+            if (g.band)
+            {
+                g.cost = g.way / kTileSize + 150.0 * (g.rank - bandFirst) / 10.0;
+            }
+        }
         static int32_t s_keptNumber = 0;
         static GoalKind s_keptKind = GoalKind::Journal;
         const auto kept = [](const QuestGoal& o) {
@@ -4780,6 +4851,14 @@ namespace
             if (a.tier == 2 && a.minutesLeft != b.minutesLeft)
             {
                 return a.minutesLeft < b.minutesLeft;
+            }
+            if (a.band != b.band)
+            {
+                return a.band;
+            }
+            if (a.band && a.cost != b.cost)
+            {
+                return a.cost < b.cost;
             }
             if (a.rank != b.rank)
             {
@@ -4813,6 +4892,13 @@ namespace
             return false;
         }
         const QuestGoal& g = g_questBook.front();
+        if (g.band && (g.number != s_keptNumber || g.kind != s_keptKind))
+        {
+            LOG("AutoAttack: quest order: band [{},{}], picked {} (cost {:.0f}, place {}; {:.0f} tiles, the band's first "
+                "place {})",
+                std::max(1, heroLevel - kBandBelow), heroLevel + kBandAbove, g.number, g.cost, g.rank + 1,
+                g.way / kTileSize, bandFirst + 1);
+        }
         s_keptNumber = g.number;
         // A hard cap (the coordinator, 2026-11-17: «ninguna meta seguida más de 45 min sin un paso de misión hecho,
         // pase lo que pase»; A3 501, A5 701, A6 1602 followed 09:10-10:43 and never skipped: the stall clock counts only
