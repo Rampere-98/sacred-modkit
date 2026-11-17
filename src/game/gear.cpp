@@ -290,7 +290,10 @@ namespace
         float value = 0.0f;     // the game's value: the tie-breaker
         int set = -1;           // the set it belongs to (index in the game's set table), -1 none
         bool weapon = false;
+        int grade = -1;         // rarity: 0 white, 1 blue, 2 yellow, 3 gold, 4 set (gradeOf), -1 unknown
+        uint32_t id = 0;
     };
+    int gradeOf(uint32_t id, bool equipment);
 
     // The game's sets (bin\sets.bin, loaded to typeMgr +0x563244 .. +0x563248): records of 0x70 bytes, the pieces'
     // info ids (the item's info +0x00) at +0x00..+0x24, 0 ending. Seen live: 0x54E in set 6, Lilith's wings in set 7.
@@ -482,6 +485,8 @@ namespace
             }
         }
         w.value = static_cast<float>(fn<GetValue>(g_getValue)(item, nullptr));
+        w.grade = gradeOf(id, true);
+        w.id = id;
         return w;
     }
 
@@ -512,6 +517,45 @@ namespace
         }
         const int nibble = info[6] & 0xF;
         return nibble <= 4 ? 0 : nibble <= 0xB ? 1 : nibble <= 0xE ? 2 : 3;
+    }
+
+    // The rarer always first (the owner, 2026-11-17 17:12: «el agente tiene que dar preferencia siempre a los objetos
+    // con mayor rareza»): between two pieces for the same place, the higher grade wins, the score only at the same
+    // grade (a set piece's, with its set bonus, as ever). +1 a rarer, -1 b rarer, 0 the same or not known.
+    const char* const kGradeName[5] = {"white", "blue", "yellow", "gold", "set"};
+    int rarerOf(const Worth& a, const Worth& b)
+    {
+        if (a.grade < 0 || b.grade < 0 || a.grade == b.grade)
+        {
+            return 0;
+        }
+        return a.grade > b.grade ? 1 : -1;
+    }
+    // A score with the grade first, for picking the best of many (the grade's step above any score)
+    float rarityScore(const Worth& w)
+    {
+        return w.score + (w.grade > 0 ? static_cast<float>(w.grade) * 100000.0f : 0.0f);
+    }
+    // a over b for one place: the rarer, else the score over the margin
+    bool beats(uint32_t a, uint32_t b, float margin)
+    {
+        const Worth wa = worth(a), wb = worth(b);
+        if (const int r = rarerOf(wa, wb))
+        {
+            return r > 0;
+        }
+        return wa.score > wb.score * (1.0f + margin);
+    }
+    void tellRarity(const Worth& winner, const Worth& loser, const char* where)
+    {
+        static std::unordered_set<uint64_t> s_told;
+        if (winner.grade < 0 || loser.grade < 0 || winner.grade <= loser.grade || winner.grade > 4 || loser.grade > 4 ||
+            !s_told.insert((static_cast<uint64_t>(winner.id) << 32) | loser.id).second)
+        {
+            return;
+        }
+        LOG("Gear: {}: {:x} over {:x} (rarity {} over {}; score {:.0f} against {:.0f})", where, winner.id, loser.id,
+            kGradeName[winner.grade], kGradeName[loser.grade], winner.score, loser.score);
     }
 
     // Pieces of each set the hero wears (by set index).
@@ -566,6 +610,14 @@ namespace
             {
                 return false;
             }
+        }
+        if (const int r = rarerOf(candidate, now))
+        {
+            if (r > 0)
+            {
+                tellRarity(candidate, now, "equipping");
+            }
+            return r > 0;
         }
         const float mine = scoreWith(candidate, worn, false), theirs = scoreWith(now, worn, true);
         if (mine > theirs * (1.0f + margin) + 0.5f)
@@ -988,7 +1040,7 @@ namespace
                 continue;
             }
             const uint32_t w = slotWeapon(pack, slot);
-            if ((!w || worth(id).score > worth(w).score * 1.05f) && elementsFit(pack, open, slot, id))
+            if ((!w || beats(id, w, 0.05f)) && elementsFit(pack, open, slot, id))
             {
                 return true;
             }
@@ -1153,7 +1205,10 @@ namespace
         // sold too. The runes are never sold (the player, 2026-11-09): the combo master takes them.
         const bool rich = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + kGold) >= 500000;
         std::erase_if(g_takenOff, [now](const auto& e) { return now - e.second > 60000; });
-        eachItem(pack, [&](uint32_t id, int cell, int w, int h) {
+        // The commonest sold first, the rarest last (the owner, 2026-11-17 17:12): a pass a grade, white to set; the
+        // counts of the last pass made are the ones told.
+        int pass = 0;
+        const auto one = [&](uint32_t id, int cell, int w, int h) {
             if (done)
             {
                 return;
@@ -1280,6 +1335,10 @@ namespace
                 ++g_sellWhy[12];
                 return;     // kept for the storage chest: a zone's resistance
             }
+            if (std::max(0, gradeOf(id, true)) > pass)
+            {
+                return;     // rarer than this pass's: in a later one
+            }
             if (!Act::allowed(Act::Kind::Sell, "sell what the hero does not use"))
             {
                 ++g_sellWhy[10];
@@ -1323,7 +1382,17 @@ namespace
                 return;
             }
             ++g_sellWhy[11];
-        });
+        };
+        for (pass = 0; pass <= 4 && !done; ++pass)
+        {
+            std::fill(std::begin(g_sellWhy), std::end(g_sellWhy), 0);
+            g_sellSeen = 0;
+            g_sellPotions = 0;
+            std::fill(std::begin(g_sellExtra), std::end(g_sellExtra), 0);
+            g_sellGems = 0;
+            g_keptNow = g_keptFuture = 0;
+            eachItem(pack, one);
+        }
         (void)hero;
         return done;
     }
@@ -2433,7 +2502,7 @@ namespace
                 return;
             }
             // The hero's class's own first (option 2): above any common one.
-            const float score = worth(id).score + (ownClassOnly(hero, id) ? 1e6f : 0.0f);
+            const float score = rarityScore(worth(id)) + (ownClassOnly(hero, id) ? 1e6f : 0.0f);
             if (!best || score > bestScore)
             {
                 best = id;
@@ -2735,7 +2804,7 @@ namespace
                 {
                     continue;
                 }
-                weak = weak < 0 || worth(w).score < worth(slotWeapon(pack, weak)).score ? slot : weak;
+                weak = weak < 0 || rarityScore(worth(w)) < rarityScore(worth(slotWeapon(pack, weak))) ? slot : weak;
             }
             if (weak >= 0)
             {
@@ -2771,7 +2840,7 @@ namespace
                 {
                     continue;
                 }
-                int weak = worth(wa).score < worth(wb).score ? a : b;
+                int weak = rarityScore(worth(wa)) < rarityScore(worth(wb)) ? a : b;
                 weak = weak == active ? (weak == a ? b : a) : weak;
                 if (weak == active || (!agentCopy() && !g_agentPut.count(slotWeapon(pack, weak))) ||
                     std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == weak; }))
@@ -2809,7 +2878,7 @@ namespace
             {
                 continue;
             }
-            targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), worth(w).score * 1.05f});
+            targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), rarityScore(worth(w)) * 1.05f});
         }
         if (targets.empty())
         {
@@ -2848,7 +2917,7 @@ namespace
                 {
                     return;
                 }
-                const float score = worth(id).score;
+                const float score = rarityScore(worth(id));
                 if (ownClassOnly(hero, id))
                 {
                     if (!own || score > ownScore)
@@ -4340,6 +4409,7 @@ namespace
             float resist;
             float score;
             bool stored;
+            int grade;
         };
         std::vector<Piece> all;
         // Kept only with a storage chest near and room in it (the reviewer, S2): else sold as before.
@@ -4395,7 +4465,7 @@ namespace
             }
             if (r[e] >= 5.0f)
             {
-                all.push_back({id, slot * 4 + e, r[e], worth(id).score, stored});
+                all.push_back({id, slot * 4 + e, r[e], worth(id).score, stored, worth(id).grade});
             }
         };
         g_storageOut.clear();
@@ -4405,7 +4475,10 @@ namespace
             eachItem(store, [&](uint32_t id, int, int, int) { consider(id, true); });
         }
         std::sort(all.begin(), all.end(), [](const Piece& a, const Piece& b) {
-            return a.key != b.key ? a.key < b.key : a.resist != b.resist ? a.resist > b.resist : a.score > b.score;
+            return a.key != b.key       ? a.key < b.key
+                   : a.grade != b.grade   ? a.grade > b.grade
+                   : a.resist != b.resist ? a.resist > b.resist
+                                          : a.score > b.score;
         });
         std::unordered_set<uint32_t> keep;
         static std::unordered_set<uint64_t> s_told;
