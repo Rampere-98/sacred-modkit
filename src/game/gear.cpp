@@ -819,9 +819,7 @@ namespace
                     continue;
                 }
             }
-            // The hands too (the owner, 2026-11-17 18:10: exclusive first, then rarity, «todo lo que tengas»): no hand
-            // exception any more; the hands' element and legality tests above still hold.
-            const bool handSlot = false;
+            const bool handSlot = slot == 12 || slot == 13;
             const bool currentOwn = !handSlot && current && ownClassOnly(hero, current);
             if (currentOwn && !own)
             {
