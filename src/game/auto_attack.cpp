@@ -4690,6 +4690,33 @@ namespace
         }
         const QuestGoal& g = g_questBook.front();
         s_keptNumber = g.number;
+        // A hard cap (the coordinator, 2026-11-17: «ninguna meta seguida más de 45 min sin un paso de misión hecho,
+        // pase lo que pase»; A3 501, A5 701, A6 1602 followed 09:10-10:43 and never skipped: the stall clock counts only
+        // steps of the quest branch, under 30 s apart, away from the goal and with no new best distance, and shops,
+        // farming and recovering between them, long trips that keep getting nearer, and jams of the place kept it from
+        // ever filling). Wall time since it was first followed with this objective; not followed for 30 min (A5 left 701
+        // for 202 24 min, and back, each parked by a block), it begins anew.
+        if (g.number > 0 && g.kind != GoalKind::Giver)
+        {
+            struct Cap
+            {
+                DWORD since = 0, last = 0;
+                uint32_t objective = 0;
+            };
+            static std::unordered_map<int32_t, Cap> s_caps;
+            Cap& c = s_caps[g.number];
+            if (!c.since || c.objective != g.objectiveKey || now - c.last > 1800000)
+            {
+                c.since = now ? now : 1;
+                c.objective = g.objectiveKey;
+            }
+            c.last = now;
+            if (now - c.since > 2700000)
+            {
+                s_caps.erase(g.number);
+                orderSkip(g.number, now, "followed 45 min with no step done (the cap, whatever else)");
+            }
+        }
         s_keptKind = g.kind;
         s_followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         g_followedNumber = g.kind == GoalKind::Journal ? g.number : 0;
