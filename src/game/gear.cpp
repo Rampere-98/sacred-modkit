@@ -1138,6 +1138,53 @@ namespace
     int g_sellExtra[3] = {}, g_sellGems = 0;
     constexpr int kGemsKept = 4;
     // What a player would do with it, for the log: use, sell, store, socket, swap, keep, and why.
+    // The set pieces worth keeping (the owner, 2026-11-17 19:03: A1 «kept 13: ... 13 sets», the backpack always full):
+    // of a set the hero wears, a piece he does not wear already, one of each (the storage's first, then the
+    // backpack's). The copies of a piece, or of one worn, are sold as any other.
+    std::unordered_set<uint32_t> setKeep(cCreature* hero, uint8_t* pack, uint8_t* store)
+    {
+        std::unordered_set<uint32_t> keep;
+        cObjectManager* objects = cObjectManager::instance();
+        if (!objects || !hero)
+        {
+            return keep;
+        }
+        const auto infoOf = [&](uint32_t id) -> uint32_t {
+            const auto* o = reinterpret_cast<const uint8_t*>(objects->object(id));
+            return o ? *reinterpret_cast<const uint32_t*>(o + 0x118) : 0;
+        };
+        const std::unordered_map<int, int> worn = setsWorn(hero);
+        std::unordered_set<uint32_t> pieces;    // the info ids worn or kept already
+        for (int slot = 0; slot < kSlots; ++slot)
+        {
+            if (const uint32_t id = fn<GetEquipped>(g_getEquipped)(hero, nullptr, slot))
+            {
+                pieces.insert(infoOf(id));
+            }
+        }
+        const auto look = [&](uint32_t id, int, int, int) {
+            const Worth w = worth(id);
+            if (w.weapon || w.set < 0 || !worn.count(w.set) || (flagsOf(id) & kQuestItem) ||
+                !fn<CanUse>(g_canUse)(hero, nullptr, id, 1))
+            {
+                return;
+            }
+            if (const uint32_t info = infoOf(id); info && pieces.insert(info).second)
+            {
+                keep.insert(id);
+            }
+        };
+        if (store)
+        {
+            eachItem(store, look);
+        }
+        if (pack)
+        {
+            eachItem(pack, look);
+        }
+        return keep;
+    }
+
     std::string destinyOf(cCreature* hero, uint8_t* pack, uint32_t id)
     {
         cObjectManager* objects = cObjectManager::instance();
@@ -1173,9 +1220,9 @@ namespace
         {
             return "store: kept for another zone's resistances";
         }
-        if (const int set = worth(id).set; set >= 0 && setsWorn(hero).count(set))
+        if (worth(id).set >= 0 && setKeep(hero, pack, entryOf(0x11)).count(id))
         {
-            return "keep: a piece of a set worn";
+            return "keep: a piece of a set worn, not worn nor held twice";
         }
         const bool classOk = fn<CanUse>(g_canUse)(hero, nullptr, id, 1) != 0;
         if (classOk && slotsWant(hero, pack, id))
@@ -1258,6 +1305,7 @@ namespace
         g_sellGems = 0;
         g_keptNow = g_keptFuture = 0;
         const std::unordered_set<uint32_t> future = futureKeep(hero, pack, entryOf(0x11));    // 0x11: the storage
+        const std::unordered_set<uint32_t> setsKept = setKeep(hero, pack, entryOf(0x11));
         // With gold to spare (over 500 000: the laboratory's endless gold) the healing potions beyond twice the stock are
         // sold too. The runes are never sold (the player, 2026-11-09): the combo master takes them.
         const bool rich = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + kGold) >= 500000;
@@ -1366,10 +1414,10 @@ namespace
                     return;
                 }
             }
-            if (const int set = worth(id).set; set >= 0 && setsWorn(hero).count(set))
+            if (setsKept.count(id))
             {
                 ++g_sellWhy[7];
-                return;     // a piece of a set the hero wears: kept for the set
+                return;     // a piece of a set the hero wears, not worn nor a copy: kept for the set
             }
             const int tab = tabFor(typeOf(id));
             if (tab < 0)
@@ -4440,6 +4488,9 @@ namespace
     std::unordered_set<uint32_t> g_visitIn, g_visitOut;
     std::atomic<DWORD> g_storageAt{0};          // when it was used, then when the work in it was done
     std::atomic<bool> g_storageOutWaiting{false};   // beaten or useless pieces in the storage, marked to be sold
+    std::atomic<bool> g_storageCrowded{false};      // the storage at 70 % of its squares or more
+    std::atomic<bool> g_sellTaken{false};           // pieces taken out of a crowded storage: the nearest merchant
+    std::unordered_map<uint32_t, const char*> g_storageWhy;   // why each kept piece is (zone, future, set, surplus)
     // No resistance margin over the rarity: the owner, 2026-11-17 17:55, shown set 62 against yellow 98: «quiero que
     // continúe la rareza», «la prioridad es de la más rara». The rarer always wins; resistance and score only between
     // the same rarity (a margin, if ever asked again, goes here).
@@ -4556,6 +4607,7 @@ namespace
             }
         };
         g_storageOut.clear();
+        g_storageWhy.clear();
         eachItem(pack, [&](uint32_t id, int, int, int) { consider(id, false); });
         if (store)
         {
@@ -4605,6 +4657,7 @@ namespace
             if (winOf[i] == i)
             {
                 keep.insert(all[i].id);
+                g_storageWhy[all[i].id] = "zone";
                 continue;
             }
             // Beaten by the one kept of its slot and purpose: out of the storage if there, sold if in the backpack
@@ -4630,19 +4683,19 @@ namespace
             keep.insert(id);
         }
         const std::unordered_map<int, int> worn = setsWorn(hero);
-        const auto setPiece = [&](uint32_t id, int, int, int) {
-            const Worth w = worth(id);
-            if (w.weapon || w.set < 0 || !worn.count(w.set) || (flagsOf(id) & kQuestItem) ||
-                !fn<CanUse>(g_canUse)(hero, nullptr, id, 1) || bestSlot(hero, id, 0.05f) >= 0)
-            {
-                return;
-            }
-            keep.insert(id);    // whatever its level: the sale keeps it too (for the set)
-        };
-        eachItem(pack, setPiece);
-        if (store)
+        (void)worn;
+        for (const uint32_t id : futureKeep(hero, pack, store))
         {
-            eachItem(store, setPiece);
+            g_storageWhy.try_emplace(id, "future");
+        }
+        // One of each set piece not worn (setKeep: copies out), whatever its level: the sale keeps the same ones.
+        for (const uint32_t id : setKeep(hero, pack, store))
+        {
+            if (bestSlot(hero, id, 0.05f) < 0)
+            {
+                keep.insert(id);
+                g_storageWhy.try_emplace(id, "set");
+            }
         }
         // And what the backpack holds over its use (the owner, 2026-11-17 17:51: «que guarde también lo bueno que no va
         // puesto [...] pociones y gemas sobrantes»): the healing potions past twice the stock (or the count wanted),
@@ -4685,6 +4738,7 @@ namespace
                         (healingType(type) || extraKind(type) >= 0 || (bodySlotOf(id) < 0 && socketable(id))))
                     {
                         keep.insert(id);
+                        g_storageWhy.try_emplace(id, "surplus");
                     }
                 });
             }
@@ -4830,7 +4884,14 @@ namespace
                 eachItem(store, [&](uint32_t id, int, int, int) { waiting = waiting || g_storageOut.count(id); });
             }
             g_storageOutWaiting = waiting;
-            put = put || (waiting && Gear::prepShopOnly());
+            {
+                int cells = 0;
+                const int freeBox = freeCellsOf(store, &cells);
+                g_storageCrowded = cells && (cells - freeBox) * 10 >= cells * 7;
+            }
+            // With the storage crowded (70 % or more) they go without a town stop: the nearest merchant after (the
+            // owner, 2026-11-17 19:03, A1: «storage holds 39 (185 squares of 200) ... to take out 10»).
+            put = put || (waiting && (Gear::prepShopOnly() || (g_storageCrowded.load() && !g_full && !g_nearFull)));
             const bool fresh = g_storageKeep.size() > g_storageKeptBefore;
             const bool prep = g_prepStore.load();    // the town stop: the chest now, whatever the last visit
             g_wantStore = put && (prep || !g_storageVisitAt || now - g_storageVisitAt > 600000 || fresh);
@@ -4896,7 +4957,8 @@ namespace
                 uint32_t beaten = 0;
                 int marked = 0, packCells = 0;
                 const int packFree = freeCellsOf(pack, &packCells);
-                const bool shopNext = Gear::prepShopOnly();
+                const bool crowded = g_storageCrowded.load();
+                const bool shopNext = Gear::prepShopOnly() || crowded;
                 eachItem(box, [&](uint32_t id, int, int bw, int bh) {
                     const auto o = reinterpret_cast<const uint8_t*>(objects ? objects->object(id) : nullptr);
                     if (g_storageOut.count(id) && !g_visitIn.count(id) && !g_visitOut.count(id) &&
@@ -4942,6 +5004,10 @@ namespace
                     {
                         g_storageOut.erase(beaten);
                         g_storageFullAt = 0;
+                        if (crowded && !Gear::prepShopOnly() && !g_sellTaken.exchange(true))
+                        {
+                            LOG("Gear: storage crowded: pieces taken out to be sold at the nearest merchant");
+                        }
                         return true;
                     }
                 }
@@ -5119,7 +5185,12 @@ namespace
                     {
                         e = r[k] > r[e] ? k : e;
                     }
-                    ++byKind["slot " + std::to_string(bodySlotOf(id)) + " " + kElementName[e]];
+                    const auto why = g_storageWhy.find(id);
+                    const char* purpose = g_storageOut.count(id)       ? "out"
+                                          : why != g_storageWhy.end() ? why->second
+                                                                      : "else";
+                    ++byKind[std::string(purpose) + " slot " + std::to_string(bodySlotOf(id)) +
+                             (std::string(purpose) == "zone" ? std::string(" ") + kElementName[e] : "")];
                     ++(g_storageOut.count(id) ? outN : g_storageKeep.count(id) ? zone : other);
                 });
                 std::string list;
@@ -5497,6 +5568,7 @@ namespace
                 g_tripDone = true;
                 g_sortWanted = true;
                 g_tripDoneAt = GetTickCount();
+                g_sellTaken = false;
                 if (g_prepShop.exchange(false))
                 {
                     LOG("Gear: town stop for region {}: the merchant done", g_prepRegion.load());
@@ -5879,7 +5951,7 @@ bool Gear::wantsShopOwn()
     // At 2 left, whatever the stock (the owner, 2026-11-17: the quests first; it was 3 of 8). A backpack near full
     // still sells before it is full (the owner's rule).
     const bool potions = g_settings.buy && g_healing >= 0 && (g_healing <= 2 || askedNow) && gold >= 200;
-    return g_ready && g_settings.trips && (g_full || g_nearFull || potions) && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
+    return g_ready && g_settings.trips && (g_full || g_nearFull || potions || g_sellTaken) && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
            (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
 }
 
@@ -6141,7 +6213,10 @@ bool Gear::wantsStorage()
 
 bool Gear::storageFirst()
 {
-    return g_storageOutWaiting.load() && Gear::prepShopOnly() && Act::may(Act::Kind::Storage);
+    // the town stop's merchant next, or the storage crowded and the backpack with room (a full one: the merchant first)
+    return g_storageOutWaiting.load() &&
+           (Gear::prepShopOnly() || (g_storageCrowded.load() && !g_full && !g_nearFull && !g_sellTaken)) &&
+           Act::may(Act::Kind::Storage);
 }
 
 void Gear::storageUsed(uint32_t id)
