@@ -3804,7 +3804,59 @@ namespace
         }
         return kOrderCount;
     }
-    std::unordered_map<int32_t, DWORD> g_orderSkipUntil;    // followed 20 min with no quest done: skipped until then
+    // Quests skipped (gone for 20 min, 40 for an escort or deadline, with no step done nor nearer; a giver not reached
+    // in 20 min): 30 min the first time; skipped twice in a row, at the end of the list until something changes, the
+    // hero's level or the journal (the coordinator, 2026-11-17: A5 went between escorts 701, 4027 tiles off, and 202
+    // the whole night, 28 quests done at 01:49 and at 08:32; each change of goal began the other's 20 min anew).
+    struct OrderSkip
+    {
+        DWORD until = 0;
+        int count = 0;          // skips in a row
+        int level = 0, done = 0, failed = 0;
+    };
+    std::unordered_map<int32_t, OrderSkip> g_orderSkips;
+    bool orderSkipped(int32_t number, DWORD now)
+    {
+        const auto it = g_orderSkips.find(number);
+        if (number <= 0 || it == g_orderSkips.end())
+        {
+            return false;
+        }
+        OrderSkip& k = it->second;
+        if (k.until && static_cast<int>(now - k.until) < 0)
+        {
+            return true;
+        }
+        if (k.count >= 2)
+        {
+            if (k.level == HeroProfile::current().level && k.done == g_questsDone && k.failed == g_questsFailed)
+            {
+                return true;
+            }
+            LOG("AutoAttack: quest order: {} back in its place (the hero's level or the journal changed)", number);
+            k.count = 0;
+        }
+        return false;
+    }
+    void orderSkip(int32_t number, DWORD now, const char* why)
+    {
+        OrderSkip& k = g_orderSkips[number];
+        ++k.count;
+        k.until = now + 1800000;
+        k.level = HeroProfile::current().level;
+        k.done = g_questsDone;
+        k.failed = g_questsFailed;
+        if (k.count >= 2)
+        {
+            LOG("AutoAttack: quest order: {} skipped: {} (twice in a row: at the end of the list until the level or the "
+                "journal changes)",
+                number, why);
+        }
+        else
+        {
+            LOG("AutoAttack: quest order: {} skipped: {} (tried again in 30 min)", number, why);
+        }
+    }
     int32_t g_orderNext = 0;                                // the first of the list neither done nor failed
     int g_orderPos = 0;                                     // its place, from 1
     // The script's quest values and the givers come to, as the last pass read them (for the order's reasons).
@@ -3907,7 +3959,6 @@ namespace
         const QuestGoal* front = g_questBook.empty() || g_questBook.front().blocked ? nullptr : &g_questBook.front();
         static std::unordered_map<int32_t, DWORD> s_told;
         int logged = 0;
-        const int32_t nextBefore = g_orderNext;
         g_orderNext = 0;
         g_orderPos = 0;
         // A main quest is passed once a later one is done or open: each class has its own start (A3's journal, 17-11:
@@ -3948,10 +3999,8 @@ namespace
             std::string why;
             if (goal != g_questBook.end())
             {
-                const auto skip = g_orderSkipUntil.find(n);
                 why = goal->blocked ? "no way to it for now (or given up after a failure)"
-                      : skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0
-                          ? "followed 20 min with no quest done: tried again later"
+                      : orderSkipped(n, now) ? "gone for long with no step done nor nearer: tried again later"
                       : goal->tier < 0 ? "held: left for last (it breaks another quest)"
                                        : "a quest that cannot wait goes first (an escort, a deadline, one lost if left)";
             }
@@ -3985,8 +4034,7 @@ namespace
                 {
                     why = "not on offer yet (the script's value is not 1)";
                 }
-                else if (const auto skip = g_orderSkipUntil.find(n);
-                         skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
+                else if (orderSkipped(n, now))
                 {
                     why = "its giver not reached in 20 min: tried again later";
                 }
@@ -4011,12 +4059,27 @@ namespace
                 LOG("AutoAttack: quest order: {} skipped: {}", n, why);
             }
         }
-        static DWORD s_nextTold = 0;
-        if (g_orderNext != nextBefore && GetTickCount() - s_nextTold > 60000)   // at most a line a minute (review Q2)
+        // «next» is the quest gone for now when it is in the list, the first not done otherwise; the first not done is
+        // named beside it, so one that holds the list shows (the coordinator, 2026-11-17: «next» stood on 151, 154,
+        // 210 and 10254 for 6 h, quests never on offer or whose giver had been come to, while others were done).
+        const int32_t head = g_orderNext;
+        const int headPos = g_orderPos;
+        if (front)
         {
-            s_nextTold = GetTickCount();
-            LOG("AutoAttack: quest order: next {} (level {}), place {}/{}", g_orderNext,
-                g_orderPos ? kQuestOrder[g_orderPos - 1].level : 0, g_orderPos, kOrderCount);
+            if (const int r = orderRank(front->number); r >= 0)
+            {
+                g_orderNext = front->number;
+                g_orderPos = r + 1;
+            }
+        }
+        static int32_t s_toldNext = 0;
+        static DWORD s_nextTold = 0;
+        if (g_orderNext != s_toldNext && (!s_nextTold || now - s_nextTold > 60000))   // at most a line a minute (Q2)
+        {
+            s_toldNext = g_orderNext;
+            s_nextTold = now ? now : 1;
+            LOG("AutoAttack: quest order: next {} (level {}), place {}/{}; first not done {} (place {})", g_orderNext,
+                g_orderPos ? kQuestOrder[g_orderPos - 1].level : 0, g_orderPos, kOrderCount, head, headPos);
         }
     }
 
@@ -4036,38 +4099,45 @@ namespace
     // a giver has its own 20 min.
     void orderFollowTick(DWORD now)
     {
-        static int32_t s_head = 0;
-        static uint32_t s_objective = 0;
-        static DWORD s_last = 0, s_spent = 0;
-        static double s_best = 0.0;
+        // One clock a quest: going between two goals no longer starts each one's time anew (A5, the night of 17-11).
+        struct Clock
+        {
+            DWORD last = 0, spent = 0;
+            double best = 0.0;
+            uint32_t objective = 0;
+        };
+        static std::unordered_map<int32_t, Clock> s_clocks;
         const OrderPick& p = g_orderPick;
         if (p.number <= 0 || p.kind == GoalKind::Giver)
         {
-            s_head = 0;
             return;
         }
-        if (p.number != s_head || p.objectiveKey != s_objective || p.distance < s_best - 10.0 * kTileSize)
+        auto [it, fresh] = s_clocks.try_emplace(p.number);
+        Clock& c = it->second;
+        if (fresh || p.objectiveKey != c.objective || p.distance < c.best - 10.0 * kTileSize)
         {
-            s_best = p.distance;
-            s_head = p.number;
-            s_objective = p.objectiveKey;
-            s_spent = 0;
-            s_last = now;
+            if (!fresh && p.objectiveKey != c.objective)
+            {
+                g_orderSkips.erase(p.number);   // a step done: its skips in a row are over
+            }
+            c.best = fresh || p.objectiveKey != c.objective ? p.distance : std::min(c.best, p.distance);
+            c.objective = p.objectiveKey;
+            c.spent = 0;
+            c.last = now;
             return;
         }
         // At the goal's place (killing there, waiting for something): not stalled, whatever the distance does
         // (review Q3).
-        if (now - s_last < 30000 && p.distance > 15.0 * kTileSize)
+        if (now - c.last < 30000 && p.distance > 15.0 * kTileSize)
         {
-            s_spent += now - s_last;
+            c.spent += now - c.last;
         }
-        s_last = now;
-        if (s_spent > (p.tier >= 2 ? 2400000u : 1200000u))   // an escort or one with a deadline: 40 min, never stuck behind it for good
+        c.last = now;
+        if (c.spent > (p.tier >= 2 ? 2400000u : 1200000u))   // an escort or one with a deadline: 40 min
         {
-            g_orderSkipUntil[s_head] = now + 1800000;
-            LOG("AutoAttack: quest order: {} skipped: gone for 20 min, no step done nor nearer (tried again in 30 min)",
-                s_head);
-            s_head = 0;
+            orderSkip(p.number, now, p.tier >= 2 ? "gone for 40 min, no step done nor nearer"
+                                                 : "gone for 20 min, no step done nor nearer");
+            c.spent = 0;
         }
     }
 
@@ -4384,15 +4454,11 @@ namespace
                         // Skipped 30 min and tried again (the owner, 2026-11-17: «la salta, lo registra y vuelve a
                         // intentarla más tarde»), its 20 min begun anew.
                         g_giverTime.erase(q.number);
-                        g_orderSkipUntil[q.number] = now + 1800000;
-                        LOG("AutoAttack: quest order: {} skipped: its giver at tile {},{} not reached in 20 min (tried "
-                            "again in 30 min; to study: its layer or its way)",
-                            q.number, q.x, q.y);
+                        orderSkip(q.number, now, "its giver not reached in 20 min (to study: its layer or its way)");
                     }
                     continue;
                 }
-                if (const auto skip = g_orderSkipUntil.find(q.number);
-                    skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
+                if (orderSkipped(q.number, now))
                 {
                     continue;
                 }
@@ -4478,8 +4544,7 @@ namespace
                              : kOrderCount;
             }
             // Skipped a while (followed 20 min with no quest done): after the whole list until tried again.
-            if (const auto skip = g_orderSkipUntil.find(g.number);
-                g.number > 0 && skip != g_orderSkipUntil.end() && static_cast<int>(now - skip->second) < 0)
+            if (orderSkipped(g.number, now))
             {
                 g.rank = kOrderCount + 1;
                 g.tier = std::min(g.tier, 0);   // a kFirst one skipped too, or it stays first (review Q1)
