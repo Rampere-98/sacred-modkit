@@ -100,6 +100,8 @@ namespace Gear
     // bit 2 a two-handed one, bit 3 any weapon, bit 4 a throwing weapon (subclass 6). 0: not known yet (the weapon
     // slots not ready).
     int slotWeapons(int slot);
+    // A weapon the hero held (in a weapon slot or a hand) in the last 30 min: picked up again whatever its grade.
+    bool heroWeapon(uint32_t id);
     // The weapon slots the hero's level opens (1-5); 0 not known.
     int weaponSlotsOpen();
     // Whether art `art` works with a slot's weapons (slotWeapons): the Wood Elf's arrows (1004-1008) only with a bow
