@@ -3815,6 +3815,10 @@ namespace
         int level = 0, done = 0, failed = 0;
     };
     std::unordered_map<int32_t, OrderSkip> g_orderSkips;
+    // Times in a row the goal followed was given up by the travel (no way for now, left a few minutes) with no step
+    // done nor nearer: at 3 it is skipped (A3 2026-11-17 08:50-08:56: 501, 203 and 402 each «no progress for 25 s on
+    // this spot: the goal left 3 min» in turn; A5 202, 38 tiles off, «stuck again: left 10 min», then 701, and back).
+    std::unordered_map<int32_t, int> g_orderBlocks;
     bool orderSkipped(int32_t number, DWORD now)
     {
         const auto it = g_orderSkips.find(number);
@@ -4119,6 +4123,10 @@ namespace
             if (!fresh && p.objectiveKey != c.objective)
             {
                 g_orderSkips.erase(p.number);   // a step done: its skips in a row are over
+            }
+            if (!fresh)
+            {
+                g_orderBlocks.erase(p.number);  // a step done or nearer: not stuck on its way
             }
             c.best = fresh || p.objectiveKey != c.objective ? p.distance : std::min(c.best, p.distance);
             c.objective = p.objectiveKey;
@@ -4619,72 +4627,70 @@ namespace
                 }
             }
         }
-        static DWORD s_followedSince = 0;
-        // 5 min, not 2 (2026-11-13: goals 117-141 tiles off chosen and dropped on the way; no copy reached the Pay
-        // Book's door in an hour).
-        // And kept on while the hero gets nearer to it, up to half an hour, whatever the others' weight but a
-        // deadline's (the stuck solver, 2026-11-14: A5 changed its goal 13 times in 18 min among four far ones, 147
-        // to 1244 tiles off, each change a new journey; its experience an hour fell from 28 963 to 3 895).
-        static DWORD s_followedFirst = 0;
-        static double s_followedBest = 0.0;
-        const bool keepFollowed = s_followed && s_followedSince && now - s_followedSince < 300000 &&
-                                  now - s_followedFirst < 1800000;
-        std::stable_sort(g_questBook.begin(), g_questBook.end(), [keepFollowed](const QuestGoal& a, const QuestGoal& b) {
+        // The goal followed is kept until done, skipped, given up by the travel (blocked) or a goal of a higher tier
+        // comes (an escort just taken): never left for another of its tier by distance or place in the order (the
+        // coordinator, 2026-11-17: A3 501 -> 203 -> 402 -> 501, A5 202 <-> 701). A quest is known by its number (its
+        // goal's tile moves with its steps and its escorted one), another goal by its creature and tile.
+        static int32_t s_keptNumber = 0;
+        static GoalKind s_keptKind = GoalKind::Journal;
+        const auto kept = [](const QuestGoal& o) {
+            return s_keptNumber > 0
+                       ? o.number == s_keptNumber && o.kind == s_keptKind
+                       : s_followed && (o.who ^ static_cast<uint32_t>(o.x) ^ (static_cast<uint32_t>(o.y) << 7)) == s_followed;
+        };
+        std::stable_sort(g_questBook.begin(), g_questBook.end(), [&kept](const QuestGoal& a, const QuestGoal& b) {
             if (a.blocked != b.blocked)
             {
                 return !a.blocked;
             }
-            // A deadline running first, the soonest; then the goal followed; then by weight (QUESTS.md: one that
-            // is lost if left, the rest, those for last); then the nearest.
-            if ((a.tier == 2) != (b.tier == 2))
+            // By tier first (an escort or a deadline, a quest lost if left, the rest, those for last), then the goal
+            // followed, then the soonest deadline, the campaign's order and the nearest.
+            if (a.tier != b.tier)
             {
-                return a.tier == 2;
+                return a.tier > b.tier;
+            }
+            const bool ak = kept(a), bk = kept(b);
+            if (ak != bk)
+            {
+                return ak;
             }
             if (a.tier == 2 && a.minutesLeft != b.minutesLeft)
             {
                 return a.minutesLeft < b.minutesLeft;
             }
-            // The goal followed is kept 2 min among those of its weight (the stuck solver, 2026-11-13: the bear's
-            // quest chosen at 49 tiles and dropped 5-11 s on for a nearer one, every time; no copy reached its goal).
-            // Then a quest of the journal that is lost if left (kFirst), then the campaign's order (the owner,
-            // 2026-11-17), those left for last (kLast) after it; the goal followed is kept among those of its place.
-            if (a.tier != b.tier)
-            {
-                return a.tier > b.tier;
-            }
             if (a.rank != b.rank)
             {
                 return a.rank < b.rank;
             }
-            if (keepFollowed)
-            {
-                const bool ak = (a.who ^ static_cast<uint32_t>(a.x) ^ (static_cast<uint32_t>(a.y) << 7)) == s_followed;
-                const bool bk = (b.who ^ static_cast<uint32_t>(b.x) ^ (static_cast<uint32_t>(b.y) << 7)) == s_followed;
-                if (ak != bk)
-                {
-                    return ak;
-                }
-            }
             return a.distance < b.distance;
         });
         questOrderPass(now, heroLv, tooLow);
+        // The quest followed until now given up by the travel (blocked) for another: counted; three times in a row with
+        // no step done nor nearer, it is skipped.
+        if (s_keptNumber > 0 && s_keptKind != GoalKind::Giver)
+        {
+            const auto prev = std::find_if(g_questBook.begin(), g_questBook.end(), [](const QuestGoal& o) {
+                return o.number == s_keptNumber && o.kind == s_keptKind;
+            });
+            const bool left = g_questBook.empty() || g_questBook.front().number != s_keptNumber;
+            if (left && prev != g_questBook.end() && prev->blocked)
+            {
+                if (++g_orderBlocks[s_keptNumber] >= 3)
+                {
+                    g_orderBlocks.erase(s_keptNumber);
+                    orderSkip(s_keptNumber, now, "its way given up 3 times in a row (no way for now)");
+                }
+            }
+        }
         if (g_questBook.empty() || g_questBook.front().blocked)
         {
+            s_keptNumber = 0;
+            s_followed = 0;
             return false;
         }
         const QuestGoal& g = g_questBook.front();
-        if (const uint32_t followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
-            followed != s_followed || !s_followedSince || now - s_followedSince > 600000)
-        {
-            s_followedSince = now;
-            s_followedFirst = now;
-            s_followedBest = g.distance;
-        }
-        else if (g.distance < s_followedBest - 10.0 * kTileSize)
-        {
-            s_followedBest = g.distance;    // nearer by 10 tiles: its five minutes begin again
-            s_followedSince = now;
-        }
+        s_keptNumber = g.number;
+        s_keptKind = g.kind;
         s_followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         g_followedNumber = g.kind == GoalKind::Journal ? g.number : 0;
         g_orderPick = {g.number, g.kind, g.tier, g.distance, g.objectiveKey};
