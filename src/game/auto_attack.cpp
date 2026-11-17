@@ -8725,6 +8725,35 @@ namespace
             questHere = true;
             setIntent(Intent::Quest, who && who != 0xFFFFFFFFu ? "a quest creature to speak to" : "a quest's goal");
             orderFollowTick(now);
+            // A kill quest whose goal is a cave's mouth, the hero inside that cave: the goal is the cave itself, its
+            // reachable tile nearest the box's centre (A5, 2026-11-17 21:48-21:50 under 2f614be9: quest 502, the
+            // thieves' lair, goal 2004,3627 at cave 5.2's door; inside, the walk to the goal went out by the net's door
+            // and, outside, the goal tile was the way back in: in and out every 4 s for 2 min, the quest skipped).
+            if (layer == 0 && Lore::questKind() == Lore::QuestKind::Kill)
+            {
+                const int htx = static_cast<int>(self->x / kTileSize), hty = static_cast<int>(self->y / kTileSize);
+                const int gtx = static_cast<int>(qx / kTileSize), gty = static_cast<int>(qy / kTileSize);
+                int cx = 0, cy = 0, nx = htx, ny = hty;
+                if (RouteNet::insideAtDoor(htx, hty, gtx, gty, &cx, &cy))
+                {
+                    if (!Whereabouts::nearestReachable(cx, cy, nx, ny))
+                    {
+                        nx = htx;
+                        ny = hty;
+                    }
+                    static uint64_t s_toldCave = 0;
+                    const uint64_t ck = (static_cast<uint64_t>(static_cast<uint32_t>(gtx)) << 32) | static_cast<uint32_t>(gty);
+                    if (ck != s_toldCave)
+                    {
+                        s_toldCave = ck;
+                        LOG("AutoAttack: inside the cave whose door is the kill quest's goal {},{}: the fights sought "
+                            "inside, from {},{}",
+                            gtx, gty, nx, ny);
+                    }
+                    qx = static_cast<int32_t>((nx + 0.5) * kTileSize);
+                    qy = static_cast<int32_t>((ny + 0.5) * kTileSize);
+                }
+            }
             // A goal inside a house or cave: its interior lies far off on the map (HQ_HE_3_3_1's at 5859..5863,
             // 3851..3886, its doors 3433,2697 and 3436,2735; Manolito): the hero outside goes to the door whose inside
             // landing is nearest the goal, and steps on it (the game's own jump), not to the goal's tile.
