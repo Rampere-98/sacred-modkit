@@ -1,6 +1,7 @@
 #include "mind.h"
 #include "hero_profile.h"
 #include "game/act.h"
+#include "game/agent_save.h"
 #include "game/cheats.h"
 #include "game/aim_assist.h"
 #include "game/auto_attack.h"
@@ -4929,6 +4930,7 @@ namespace
                 g_wantStore = false;
                 g_wantTake = false;
                 g_storageKeptBefore = g_storageKeep.size();
+                AgentSave::visitDone("the storage chest's visit");
                 if (g_prepStore.exchange(false))
                 {
                     LOG("Gear: town stop for region {}: the storage chest done", g_prepRegion.load());
@@ -5569,6 +5571,7 @@ namespace
                 g_sortWanted = true;
                 g_tripDoneAt = GetTickCount();
                 g_sellTaken = false;
+                AgentSave::visitDone("a merchant's visit");
                 if (g_prepShop.exchange(false))
                 {
                     LOG("Gear: town stop for region {}: the merchant done", g_prepRegion.load());

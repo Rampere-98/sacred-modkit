@@ -15,6 +15,9 @@ namespace AgentSave
     // A level gained (the player, 2026-11-11: «sí, al subir»; each restart lost the levels gained since the last
     // quest): a save is due too, on the same terms.
     void levelUp();
+    // A merchant's or the storage chest's visit over (the owner, 2026-11-17 19:10: A1 died 16 min after its last save
+    // and lost a shop trip): a save due, on the same terms (no enemy near).
+    void visitDone(const char* where);
     // A quest failed (the player, 2026-11-11: «prohíbe al agente fracasar misiones, el fracaso cuenta como muerte»):
     // as a death, counted toward the 10 and the last save loaded.
     void questFailed();

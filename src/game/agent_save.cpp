@@ -294,6 +294,15 @@ void AgentSave::questFailed()
     g_failedQuest = true;
 }
 
+void AgentSave::visitDone(const char* where)
+{
+    if (!g_saveWanted)
+    {
+        LOG("AgentSave: {} done: a save is due", where);
+    }
+    questDone();
+}
+
 void AgentSave::levelUp()
 {
     LOG("AgentSave: a level gained: a save is due");
@@ -652,6 +661,18 @@ void AgentSave::onFrame()
     // 8 minutes, not 3 (the stuck solver, 2026-11-16: A7's GAME16 written at 21:58:36, 3.0 min after it was wanted, in a
     // fight with two enemies and 70 % of its health: the wait ran out just then).
     const bool patient = now - s_wantedSince > 480000;
+    // 15 min at most (the owner, 2026-11-17 19:10, A1: wanted at 18:53, died at 19:00 with nothing saved since 18:44):
+    // past it, saved as soon as no fight is under way, the potions, the enemies about and the health aside.
+    const bool overdue = !g_restartSave && now - s_wantedSince > 900000;
+    if (overdue)
+    {
+        static DWORD s_overdueTold = 0;
+        if (now - s_overdueTold > 60000)
+        {
+            s_overdueTold = now;
+            LOG("AgentSave: the save wanted for 15 min: made as soon as no fight is under way");
+        }
+    }
     const int foes = CombatLearn::forecast().foes;
     // Not shut in a closed area (the stuck solver, 2026-11-14: A3 saved at 12:23, 13:21 and 13:31 inside the cave
     // 2.3 at 4043..4091 x 70..122 and could not leave it: every load, every 5-min stuck reload and every death put it
@@ -676,7 +697,7 @@ void AgentSave::onFrame()
     }
     // Not in a fight or 15 s after one, whatever the wait (up to 12 min): the save is the place every load returns to.
     // A restart's save too, 8 s after.
-    if ((!g_restartSave && now - s_wantedSince < 720000 && AutoAttack::foughtWithin(15000)) ||
+    if ((!g_restartSave && (now - s_wantedSince < 720000 || overdue) && AutoAttack::foughtWithin(15000)) ||
         (g_restartSave && AutoAttack::foughtWithin(8000)))
     {
         static DWORD s_fightToldAt = 0;
@@ -687,7 +708,7 @@ void AgentSave::onFrame()
         }
         return;
     }
-    if (health <= 0 || (foes > 0 && !patient) || !allowed)
+    if (health <= 0 || (foes > 0 && !patient && !overdue) || !allowed)
     {
         static DWORD s_heldToldAt = 0;
         if (now - s_heldToldAt > 60000)
@@ -702,7 +723,8 @@ void AgentSave::onFrame()
     // in 31 min, each load straight back among them): a player saves once the place is quiet and the hero whole.
     // A restart's save at 80 % of the health at least (A4 and A7, 2026-11-16 21:40: «a restart coming: saving GAME13 (405 of 756
     // health)», in a fight, and eight deaths from that save in 32 min; A7 the same minute): not at half.
-    if (g_restartSave ? health * 100 < hero->maxHealth * 80
+    if (overdue ? false
+        : g_restartSave ? health * 100 < hero->maxHealth * 80
                       // Wanted for 3 minutes and never that quiet (A4 and A6, 2026-11-14: due 20 min and not saved,
                       // one fight after another): then with none within 10 tiles and half the health.
                       // Tighter (A7, 2026-11-16: saved at 70 % of its health among 30 enemies): 25 tiles and 70 % after
