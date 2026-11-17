@@ -2404,7 +2404,12 @@ namespace
         const bool quickOne = fc.foes == 1 && fc.seconds > 0.0f && fc.seconds < 6.0f;
         // C4 (docs/Criterios.md: 3 potions or more in a fight were 38.6 % of the near-deaths): two drunk and two or
         // more still up, the fight is left now, whatever the health.
-        const bool drained = CombatLearn::fightPotions() >= 2 && fc.foes >= 2 && !quickOne;
+        // Not at nine tenths of the health or more with the fight foreseen won at nine in ten (the stuck solver, 2026-11-17, A1,
+        // a Seraphim of level 27 with 1578 health: «a hopeless fight (4 enemies, 97% to win, 0% to go bad): stepping back at
+        // 1578 of 1578 health», 86 in 55 min, the potions of the same fight drunk and the hero whole again; two of them in
+        // 10 min is «outmatched here» and the quests above its level are held for good: 13 h with none done).
+        const bool drained = CombatLearn::fightPotions() >= 2 && fc.foes >= 2 && !quickOne &&
+                             !(health * 100 >= maximum * 90 && fc.win >= 0.9f);
         // More enemies on the hero than the class takes at once (docs/Mentalidades.md §3, maxFoes / maxFoesDry with
         // no healing potion) and the fight not clearly won: left too.
         const int foeCap = Gear::healingLeft() > 0 ? mind.maxFoes : mind.maxFoesDry;
