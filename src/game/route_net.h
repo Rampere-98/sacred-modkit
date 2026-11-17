@@ -46,6 +46,10 @@ namespace RouteNet
     bool insideOf(int landX, int landY, int x, int y);
     // Whether tiles (ax, ay) and (bx, by) both lie inside one interior a door of the net lands in (its box).
     bool sameInterior(int ax, int ay, int bx, int by);
+    // Whether (heroX, heroY) lies inside the interior whose door's outside landing is within 8 tiles of (goalX, goalY):
+    // a quest whose goal is a cave's mouth and its work inside (A5, 2026-11-17: quest 502, «kill the thieves in their
+    // lair», goal 2004,3627 at cave 5.2's door, the thieves inside).
+    bool insideAtDoor(int heroX, int heroY, int goalX, int goalY);
     // The tile to step on to go through a door whose landing is (landX, landY) on `layer`, the hero at (heroX, heroY):
     // a cave's zone beside the landing (Teleports::caveTriggerNear), else the stairs anchor nearest the hero
     // (Teleports::anchorsNear), else the landing. On the game's thread (both read its memory).
