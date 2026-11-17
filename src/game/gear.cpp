@@ -2499,6 +2499,90 @@ namespace
         return mask && !(mask & (mask - 1)) && fn<CanUse>(g_canUse)(hero, nullptr, id, 1) != 0;
     }
 
+    // The equipment told on request (the owner, 2026-11-17: «el equipo detallado de A2»; tools/equipo.py): a file
+    // SacredBild.equipo beside the game's exe asks it; the table goes to SacredBild-equipo.md there and the request is
+    // deleted. Read only: what the equipping itself reads (worth, rarity, resistances), nothing moved.
+    void dumpGear(cCreature* hero, uint8_t* pack)
+    {
+        static DWORD s_lookAt = 0;
+        const DWORD now = GetTickCount();
+        if (now - s_lookAt < 2000)
+        {
+            return;
+        }
+        s_lookAt = now;
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring dir = exe;
+        dir = dir.substr(0, dir.find_last_of(L"\\/") + 1);
+        const std::wstring ask = dir + L"SacredBild.equipo";
+        if (GetFileAttributesW(ask.c_str()) == INVALID_FILE_ATTRIBUTES || !hero || !pack)
+        {
+            return;
+        }
+        DeleteFileW(ask.c_str());
+        const auto* st = reinterpret_cast<const uint8_t*>(hero) + kStats;
+        const auto f32 = [&](size_t at) { return *reinterpret_cast<const float*>(st + at); };
+        std::string out;
+        const auto row = [&](const std::string& where, uint32_t id) {
+            if (!id)
+            {
+                out += std::format("| {} | — | | | | | | | |\n", where);
+                return;
+            }
+            const Worth w = worth(id);
+            float v[4] = {};
+            std::string stats;
+            if (damageOf(id, v))
+            {
+                stats = std::format("dmg {:.0f}/{:.0f}/{:.0f}/{:.0f}", v[0], v[1], v[2], v[3]);
+            }
+            else
+            {
+                resistOf(hero, id, v);
+                stats = std::format("res {:.0f}/{:.0f}/{:.0f}/{:.0f}", v[0], v[1], v[2], v[3]);
+            }
+            out += std::format("| {} | {:x} | {:x} | {} {} | {} | {} | {} | {} | {:.0f} |\n", where, id, typeOf(id),
+                               gradeName(w.grade), w.grade, w.set >= 0 ? std::to_string(w.set) : "—",
+                               w.exclusive ? "sí" : "no", levelOf(id), stats, w.score);
+        };
+        const uint8_t* entry = entryOf(static_cast<int>(hero->id));
+        const uint32_t gold = *reinterpret_cast<const uint32_t*>(st + 0x46);
+        out += std::format("# Equipo (nivel {}, oro {}, ranura activa {})\n\n",
+                           *reinterpret_cast<const uint16_t*>(st + 0x56), gold,
+                           entry ? *reinterpret_cast<const uint16_t*>(entry + kActiveSlot) + 1 : 0);
+        out += std::format("Defensa {:.0f}; resistencias (fís/fuego/magia/veneno) {:.0f}/{:.0f}/{:.0f}/{:.0f}\n\n",
+                           f32(0x5E), f32(0x66) * f32(0xD6), f32(0x6A) * f32(0xDA), f32(0x6E) * f32(0xDE),
+                           f32(0x72) * f32(0xE2));
+        out += "| hueco | id | tipo | rareza | set | exclusivo | nivel | daño o resistencias (fís/fuego/magia/veneno) | "
+               "score |\n|---|---|---|---|---|---|---|---|---|\n";
+        for (int slot = 0; slot < kSlots; ++slot)
+        {
+            row("cuerpo " + std::to_string(slot), fn<GetEquipped>(g_getEquipped)(hero, nullptr, slot));
+        }
+        for (int slot = 0; slot < 5; ++slot)
+        {
+            for (int hand = 0; hand < 2; ++hand)
+            {
+                row(std::format("ranura {} mano {}", slot + 1, hand), slotItem(pack, slot, hand));
+            }
+        }
+        int inPack = 0, inStore = 0;
+        eachItem(pack, [&](uint32_t, int, int, int) { ++inPack; });
+        if (uint8_t* store = entryOf(0x11))
+        {
+            eachItem(store, [&](uint32_t, int, int, int) { ++inStore; });
+        }
+        out += std::format("\nMochila: {} piezas; almacén: {} piezas\n", inPack, inStore);
+        const std::wstring path = dir + L"SacredBild-equipo.md";
+        if (FILE* file = _wfopen(path.c_str(), L"wb"))
+        {
+            fwrite(out.data(), 1, out.size(), file);
+            fclose(file);
+        }
+        LOG("Gear: the equipment told on request ({} bytes to SacredBild-equipo.md)", out.size());
+    }
+
     // The agents' copies (SacredA1..A8), never the player's folder.
     bool agentCopy()
     {
@@ -5472,6 +5556,7 @@ namespace
                     }
                 }
             }
+            dumpGear(hero, pack);
             if (g_canUse && !vampireShape(hero))
             {
                 const int foreign = countForeignRunes(hero, pack);
