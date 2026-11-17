@@ -364,6 +364,12 @@ bool AgentSave::newGameFromMenu(int gameClass)
         {
             LOG("AgentSave: a new game: the givers come to before forgotten");
         }
+        // And the quests skipped in it (AutoAttack's SacredBild-skips.txt)
+        const std::wstring skips = g_deathsPath.substr(0, g_deathsPath.find_last_of(L"\\/") + 1) + L"SacredBild-skips.txt";
+        if (DeleteFileW(skips.c_str()))
+        {
+            LOG("AgentSave: a new game: the quests skipped before forgotten");
+        }
     }
     // The two functions where block S 10 has them, else the clicks as before.
     static const uint8_t kStartSig[] = {0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF, 0x68};

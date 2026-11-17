@@ -3744,6 +3744,10 @@ namespace
     // is open again: A7 failed side quest 302 after each load, 52 failures in a day). One failed so is left: the
     // book skips it for this run, as a player leaves a quest he cannot do.
     int32_t g_followedNumber = 0;
+    // A goal on the way gone to now instead of the order's (questTarget), and its place: the order's clocks wait, and a
+    // jam there parks its tile, not the order's goal's.
+    bool g_detouring = false;
+    int32_t g_detourX = 0, g_detourY = 0;
     std::vector<int32_t> g_givenUpQuests;
 
     // Failed quests and the copy's slot (the coordinator, 2026-11-16: no save ever after a quest failed; one failed for
@@ -3819,8 +3823,64 @@ namespace
     // done nor nearer: at 3 it is skipped (A3 2026-11-17 08:50-08:56: 501, 203 and 402 each «no progress for 25 s on
     // this spot: the goal left 3 min» in turn; A5 202, 38 tiles off, «stuck again: left 10 min», then 701, and back).
     std::unordered_map<int32_t, int> g_orderBlocks;
+    // The skips kept beside the exe across the copy's restarts and installs (the coordinator, 2026-11-17: A3 went back
+    // to 501 after the install of 12:07, its skip forgotten): SacredBild-skips.txt, a line a quest «number count level
+    // done failed ms-left»; read on first use, written after a pass that changed them, removed by AgentSave on a new
+    // game.
+    std::wstring giversPath();
+    bool g_journalSeen = false;     // the journal read in this run: the skips' level and counts compared only then
+    bool g_skipsRead = false, g_skipsDirty = false;
+    std::wstring skipsPath()
+    {
+        const std::wstring path = giversPath();
+        return path.substr(0, path.find_last_of(L"\\/") + 1) + L"SacredBild-skips.txt";
+    }
+    void readSkips(DWORD now)
+    {
+        g_skipsRead = true;
+        FILE* f = _wfopen(skipsPath().c_str(), L"r");
+        if (!f)
+        {
+            return;
+        }
+        int number = 0, count = 0, level = 0, done = 0, failed = 0;
+        unsigned long left = 0;
+        while (std::fscanf(f, "%d %d %d %d %d %lu", &number, &count, &level, &done, &failed, &left) == 6)
+        {
+            if (number > 0 && count > 0)
+            {
+                OrderSkip& k = g_orderSkips[number];
+                k.count = count;
+                k.level = level;
+                k.done = done;
+                k.failed = failed;
+                const DWORD until = now + static_cast<DWORD>(left);
+                k.until = left ? (until ? until : 1) : 0;
+            }
+        }
+        std::fclose(f);
+        LOG("AutoAttack: {} quests skipped before, kept from the last runs", g_orderSkips.size());
+    }
+    void writeSkips(DWORD now)
+    {
+        g_skipsDirty = false;
+        if (FILE* f = _wfopen(skipsPath().c_str(), L"w"))
+        {
+            for (const auto& [number, k] : g_orderSkips)
+            {
+                const unsigned long left =
+                    k.until && static_cast<int>(now - k.until) < 0 ? static_cast<unsigned long>(k.until - now) : 0;
+                std::fprintf(f, "%d %d %d %d %d %lu\n", number, k.count, k.level, k.done, k.failed, left);
+            }
+            std::fclose(f);
+        }
+    }
     bool orderSkipped(int32_t number, DWORD now)
     {
+        if (!g_skipsRead)
+        {
+            readSkips(now);
+        }
         const auto it = g_orderSkips.find(number);
         if (number <= 0 || it == g_orderSkips.end())
         {
@@ -3833,17 +3893,25 @@ namespace
         }
         if (k.count >= 2)
         {
-            if (k.level == HeroProfile::current().level && k.done == g_questsDone && k.failed == g_questsFailed)
+            // Not before the journal and the hero are read (a skip kept from the last run is compared with them)
+            if (!g_journalSeen || HeroProfile::current().level <= 0 ||
+                (k.level == HeroProfile::current().level && k.done == g_questsDone && k.failed == g_questsFailed))
             {
                 return true;
             }
             LOG("AutoAttack: quest order: {} back in its place (the hero's level or the journal changed)", number);
             k.count = 1;   // one more stall parks it again (the journal moves on any failure and load too)
+            g_skipsDirty = true;
         }
         return false;
     }
     void orderSkip(int32_t number, DWORD now, const char* why)
     {
+        if (!g_skipsRead)
+        {
+            readSkips(now);
+        }
+        g_skipsDirty = true;
         OrderSkip& k = g_orderSkips[number];
         ++k.count;
         k.until = now + 1800000;
@@ -4112,7 +4180,8 @@ namespace
         };
         static std::unordered_map<int32_t, Clock> s_clocks;
         const OrderPick& p = g_orderPick;
-        if (p.number <= 0 || p.kind == GoalKind::Giver)
+        // A goal on the way gone to now: the order's clock waits (its 30 s gap drops the detour's time).
+        if (p.number <= 0 || p.kind == GoalKind::Giver || g_detouring)
         {
             return;
         }
@@ -4122,7 +4191,10 @@ namespace
         {
             if (!fresh && p.objectiveKey != c.objective)
             {
-                g_orderSkips.erase(p.number);   // a step done: its skips in a row are over
+                if (g_orderSkips.erase(p.number))   // a step done: its skips in a row are over
+                {
+                    g_skipsDirty = true;
+                }
             }
             if (!fresh)
             {
@@ -4155,6 +4227,10 @@ namespace
     bool questTarget(int32_t heroX, int32_t heroY, int32_t& x, int32_t& y, double& radius, uint32_t& who)
     {
         const DWORD now = GetTickCount();
+        if (g_skipsDirty)
+        {
+            writeSkips(now);    // the last pass's skips (and orderFollowTick's after it)
+        }
         g_questBook.clear();
         const auto begin = *reinterpret_cast<const uint8_t* const*>(0xAAD3A4);
         const auto end = *reinterpret_cast<const uint8_t* const*>(0xAAD3A8);
@@ -4351,6 +4427,7 @@ namespace
             }
             g_questsDone = done;
             g_questsFailed = failed;
+            g_journalSeen = true;
         }
         for (const Sign& sign : g_signs)
         {
@@ -4539,6 +4616,21 @@ namespace
                 g.tier = std::min(0, questPriority(g.number));
                 g_questBook.push_back(g);
             }
+            // And any other within 40 tiles: a goal on the way (the coordinator, 2026-11-17), taken in passing.
+            for (size_t i = 3; i < nearest.size(); ++i)
+            {
+                if (nearest[i].first > 40.0)
+                {
+                    continue;
+                }
+                QuestGoal g{GoalKind::Giver};
+                g.x = static_cast<int32_t>((nearest[i].second->x + 0.5) * kTileSize);
+                g.y = static_cast<int32_t>((nearest[i].second->y + 0.5) * kTileSize);
+                g.radius = 6.0 * kTileSize;
+                g.number = nearest[i].second->number;
+                g.tier = std::min(0, questPriority(g.number));
+                g_questBook.push_back(g);
+            }
             // Quests on offer with no giver known (the script's own list is longer than quest_givers.inc): they hold
             // nothing, but are named every 30 min to be looked for.
             static DWORD s_unknownAt = 0;
@@ -4717,6 +4809,7 @@ namespace
         {
             s_keptNumber = 0;
             s_followed = 0;
+            g_detouring = false;
             return false;
         }
         const QuestGoal& g = g_questBook.front();
@@ -4752,7 +4845,117 @@ namespace
         s_followed = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
         g_followedNumber = g.kind == GoalKind::Journal ? g.number : 0;
         g_orderPick = {g.number, g.kind, g.tier, g.distance, g.objectiveKey};
-        if (g.kind == GoalKind::Giver)
+        // On the way (the coordinator, 2026-11-17: «mientras va a la meta del orden, coger cualquier misión cuyo dador o
+        // paso pendiente esté a ≤40 casillas de su ruta o posición …, sin desviarse más de eso, y volver a la meta …
+        // Nada de esto cambia la meta del orden»): another goal 40 tiles or less from the hero (60 by the way), not
+        // blocked nor skipped nor one left for last, nor a giver or sign of a quest done at once (taken, it would become
+        // the goal), is gone to first while the order's is more than 40 tiles off. The order's goal stays the one kept,
+        // its clocks waiting (not the 45 min cap). One goal on the way is kept until done, gone, out of reach or 5 min
+        // spent at that step of it (then left 30 min), so two are not flipped between.
+        const QuestGoal* by = nullptr;
+        {
+            struct Detour
+            {
+                DWORD spent = 0, last = 0, until = 0;
+            };
+            static std::unordered_map<uint64_t, Detour> s_detours;
+            static uint64_t s_on = 0;
+            const auto keyOf = [](const QuestGoal& o) {
+                const uint32_t id = o.number > 0 ? static_cast<uint32_t>(o.number)
+                                                 : (o.who ^ static_cast<uint32_t>(o.x) ^ (static_cast<uint32_t>(o.y) << 7)) |
+                                                       0x80000000u;
+                return (static_cast<uint64_t>(id) << 32) | o.objectiveKey;
+            };
+            const auto offOf = [&](const QuestGoal& o) {
+                return std::hypot(static_cast<double>(o.x - heroX), static_cast<double>(o.y - heroY)) / kTileSize;
+            };
+            const auto fits = [&](const QuestGoal& o, double limit) {
+                if (&o == &g || o.blocked || o.tier < 0 || (o.number > 0 && o.number == g.number) ||
+                    (o.number > 0 && orderSkipped(o.number, now)) ||
+                    (o.kind != GoalKind::Journal && o.number > 0 && doneAtOnce(o.number)) || offOf(o) > limit)
+                {
+                    return false;
+                }
+                return wayLength(heroX, heroY, o.x, o.y) / kTileSize <= limit * 1.5;
+            };
+            const auto kindName = [](const QuestGoal& o) {
+                return o.kind == GoalKind::Journal ? (o.main ? "main quest" : "side quest")
+                       : o.kind == GoalKind::Offer ? "a quest offered"
+                       : o.kind == GoalKind::Giver ? "the giver of quest"
+                                                   : "a report";
+            };
+            if (s_on)
+            {
+                const auto on = std::find_if(g_questBook.begin(), g_questBook.end(),
+                                             [&](const QuestGoal& o) { return keyOf(o) == s_on; });
+                Detour& d = s_detours[s_on];
+                if (on == g_questBook.end() || !fits(*on, 60.0))
+                {
+                    LOG("AutoAttack: on the way: {} over ({}, after {} s): back to the order's {}",
+                        (s_on >> 32) & 0x7FFFFFFF,
+                        on == g_questBook.end() ? "its step done or gone" : "out of reach, blocked or skipped",
+                        d.spent / 1000, g.number);
+                    s_on = 0;
+                }
+                else
+                {
+                    if (now - d.last < 30000)
+                    {
+                        d.spent += now - d.last;
+                    }
+                    d.last = now;
+                    if (d.spent > 300000)
+                    {
+                        d.until = now + 1800000;
+                        LOG("AutoAttack: on the way: {} {} given 5 min with its step not done: left 30 min, back to the "
+                            "order's {}",
+                            kindName(*on), on->number, g.number);
+                        s_on = 0;
+                    }
+                    else
+                    {
+                        by = &*on;
+                    }
+                }
+            }
+            if (!s_on && offOf(g) > 40.0)
+            {
+                const QuestGoal* best = nullptr;
+                for (const QuestGoal& o : g_questBook)
+                {
+                    const auto d = s_detours.find(keyOf(o));
+                    if (d != s_detours.end() && d->second.until && static_cast<int>(now - d->second.until) < 0)
+                    {
+                        continue;
+                    }
+                    if (fits(o, 40.0) && (!best || offOf(o) < offOf(*best)))
+                    {
+                        best = &o;
+                    }
+                }
+                if (best)
+                {
+                    s_on = keyOf(*best);
+                    Detour& d = s_detours[s_on];
+                    if (d.until && static_cast<int>(now - d.until) >= 0)
+                    {
+                        d = {};     // its 30 min over: 5 min anew
+                    }
+                    d.last = now;
+                    by = best;
+                    LOG("AutoAttack: on the way: {} {} at {:.0f} tiles, then back to the order's {} ({:.0f} tiles off)",
+                        kindName(*best), best->number, offOf(*best), g.number, offOf(g));
+                }
+            }
+        }
+        g_detouring = by != nullptr;
+        if (by)
+        {
+            g_detourX = by->x;
+            g_detourY = by->y;
+        }
+        // The giver's own 20 min count only while it is the one gone to.
+        if (g.kind == GoalKind::Giver && !by)
         {
             if (g_giverFollowed == g.number && now - g_giverFollowedLast < 30000)
             {
@@ -4761,13 +4964,14 @@ namespace
             g_giverFollowed = g.number;
             g_giverFollowedLast = now;
         }
-        x = g.x;
-        y = g.y;
-        radius = g.radius;
-        who = g.who;
-        if (g.kind == GoalKind::Journal)
+        const QuestGoal& to = by ? *by : g;
+        x = to.x;
+        y = to.y;
+        radius = to.radius;
+        who = to.who;
+        if (to.kind == GoalKind::Journal)
         {
-            Lore::readQuest(g.titleKey, g.objectiveKey);     // the quest's title and objective read: its kind
+            Lore::readQuest(to.titleKey, to.objectiveKey);     // the quest's title and objective read: its kind
         }
         static uint32_t told = 0;
         const uint32_t pick = g.who ^ static_cast<uint32_t>(g.x) ^ (static_cast<uint32_t>(g.y) << 7);
@@ -4783,6 +4987,22 @@ namespace
                 g.number, g.tier, g.minutesLeft, g.distance / kTileSize);
         }
         return true;
+    }
+
+    // The goal walked to now: one on the way (questTarget's detour) if so, else the book's first.
+    const QuestGoal& goalWalked()
+    {
+        if (g_detouring)
+        {
+            for (const QuestGoal& o : g_questBook)
+            {
+                if (o.x == g_detourX && o.y == g_detourY)
+                {
+                    return o;
+                }
+            }
+        }
+        return g_questBook.front();
     }
 
     void drawQuestBook()
@@ -7641,9 +7861,11 @@ namespace
                 s_lastJamY = self->y;
                 if (!g_questBook.empty() && !samePlace)
                 {
-                    const QuestGoal& g = g_questBook.front();
-                    g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(g.x / kTileSize)) << 32) |
-                                    static_cast<uint32_t>(g.y / kTileSize)] = now + 180000u * static_cast<DWORD>(s_step);
+                    // The goal walked to: one on the way if so (the order's goal is not the one jammed for)
+                    const int32_t gx = g_detouring ? g_detourX : g_questBook.front().x;
+                    const int32_t gy = g_detouring ? g_detourY : g_questBook.front().y;
+                    g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(gx / kTileSize)) << 32) |
+                                    static_cast<uint32_t>(gy / kTileSize)] = now + 180000u * static_cast<DWORD>(s_step);
                 }
                 else if (samePlace)
                 {
@@ -8236,7 +8458,7 @@ namespace
                     static uint64_t s_noWayKey = 0;
                     static int s_noWayTimes = 0;
                     static DWORD s_noWayFirst = 0;
-                    const QuestGoal* front = g_questBook.empty() ? nullptr : &g_questBook.front();
+                    const QuestGoal* front = g_questBook.empty() ? nullptr : &goalWalked();
                     const int32_t gx = front ? front->x : qx, gy = front ? front->y : qy;
                     const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(gx / kTileSize)) << 32) |
                                          static_cast<uint32_t>(gy / kTileSize);
@@ -8302,7 +8524,7 @@ namespace
                 if (!g_questBook.empty())
                 {
                     // The book's own goal (qx, qy may be a door or the reachable tile nearest it).
-                    const QuestGoal& g = g_questBook.front();
+                    const QuestGoal& g = goalWalked();
                     g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(g.x / kTileSize)) << 32) |
                                     static_cast<uint32_t>(g.y / kTileSize)] = now + 900000;
                 }
@@ -8643,7 +8865,7 @@ namespace
                                 g_travelBlocked[key] = now + 300000;
                                 if (!g_questBook.empty())
                                 {
-                                    const QuestGoal& bg = g_questBook.front();
+                                    const QuestGoal& bg = goalWalked();
                                     g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(bg.x / kTileSize)) << 32) |
                                                     static_cast<uint32_t>(bg.y / kTileSize)] = now + 300000;
                                 }
@@ -8836,8 +9058,8 @@ namespace
                 2413,  2503,  6001,  10250, 10251, 10252, 10253, 10259, 15003, 15007, 15011, 15012, 15013, 15015, 15018, 15020,
                 15024, 15028, 15029, 15030, 15032, 15034, 15038, 15041, 15042, 15043, 15047, 15048, 15050, 15056,
                 15057, 15058, 15059, 15063, 15068, 15073, 15074, 15075, 15076, 15078, 15081, 15082};
-            const bool killByNumber = !g_questBook.empty() && g_questBook.front().kind == GoalKind::Journal &&
-                                      std::find(std::begin(kKillQuests), std::end(kKillQuests), g_questBook.front().number) !=
+            const bool killByNumber = !g_questBook.empty() && goalWalked().kind == GoalKind::Journal &&
+                                      std::find(std::begin(kKillQuests), std::end(kKillQuests), goalWalked().number) !=
                                           std::end(kKillQuests);
             if (Lore::questKind() == Lore::QuestKind::Kill || killByNumber)
             {
@@ -8854,7 +9076,7 @@ namespace
             {
                 static uint64_t s_lookKey = 0;
                 static DWORD s_lookSince = 0;
-                const QuestGoal& looked = g_questBook.front();
+                const QuestGoal& looked = goalWalked();
                 const uint64_t lookKey = (static_cast<uint64_t>(static_cast<uint32_t>(looked.x / kTileSize)) << 32) |
                                          static_cast<uint32_t>(looked.y / kTileSize);
                 // Counted only with the hero at the goal (within its ring, 30 tiles at least): the quests' session,
@@ -9068,7 +9290,7 @@ namespace
                 }
                 if (!g_questBook.empty())
                 {
-                    const QuestGoal& g = g_questBook.front();
+                    const QuestGoal& g = goalWalked();
                     g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(g.x / kTileSize)) << 32) |
                                     static_cast<uint32_t>(g.y / kTileSize)] = now + 600000;
                 }
