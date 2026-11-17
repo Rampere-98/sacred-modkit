@@ -1878,8 +1878,10 @@ namespace
     }
 
     // A slot's element, five of them (the player, 2026-11-16: «5 categorías de elementos»): the game deals four kinds
-    // (physical, fire, magic, poison; lightning is magic), the one a weapon deals at least half its damage in; under
-    // half in each, 4 «mixed». -1: no damage.
+    // (physical, fire, magic, poison; lightning is magic). Every weapon deals some physical damage, so one dealing any
+    // fire is a fire weapon, and so on (the player, 2026-11-17: «si inflige daño de fuego, el arma es considerada de
+    // fuego … un arma que inflige daño del elemento fuego ya es una arma del elemento fuego»); two or three of them,
+    // 4 «mixed»; physical only, 0. -1: no damage.
     int slotElement(uint32_t id)
     {
         float d[4] = {};
@@ -1887,14 +1889,16 @@ namespace
         {
             return -1;
         }
-        int best = 0;
-        float sum = d[0];
+        int element = 0, kinds = 0;
         for (int k = 1; k < 4; ++k)
         {
-            best = d[k] > d[best] ? k : best;
-            sum += d[k];
+            if (d[k] > 0.0f)
+            {
+                element = k;
+                ++kinds;
+            }
         }
-        return d[best] * 2.0f >= sum ? best : 4;
+        return kinds > 1 ? 4 : element;
     }
 
     const char* elementName(int k)
