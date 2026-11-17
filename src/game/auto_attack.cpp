@@ -942,9 +942,9 @@ namespace
     }
 
     // True if `self` is too far from (x, y) for the use order: a walk order went out instead.
-    bool walkFirst(cCreature* self, int32_t x, int32_t y)
+    bool walkFirst(cCreature* self, int32_t x, int32_t y, int32_t reach = kUseReach)
     {
-        if (std::abs(x - self->x) <= kUseReach && std::abs(y - self->y) <= kUseReach)
+        if (std::abs(x - self->x) <= reach && std::abs(y - self->y) <= reach)
         {
             return false;
         }
@@ -1007,6 +1007,12 @@ namespace
         DWORD at = 0;
         bool told = true;
     } g_doorUse;
+    // The door the hero is walking up to for a click: attack() is called again from doorPendingTick every second, 25 s at most.
+    struct DoorPending
+    {
+        uint32_t id = 0;
+        DWORD since = 0, askedAt = 0;
+    } g_doorPending;
     // The door's trigger record (AGENT_ADDRESSES «Puertas y palancas»): +0xA bit 0 open, 0x8000 locked by a script or lever,
     // +0xC the key it asks. False when the record cannot be read.
     bool doorTrigger(const cObject* o, uint16_t& state, uint32_t& key)
@@ -1040,7 +1046,12 @@ namespace
         const cObject* o = objects ? objects->object(g_doorUse.id) : nullptr;
         uint16_t state = 0;
         uint32_t key = 0;
-        if (o && doorTrigger(o, state, key))
+        if (o && !o->x && !o->y)
+        {
+            LOG("AutoAttack: door {:x} clicked {:.1f} s ago: no longer loaded (its position reads 0,0): no state", g_doorUse.id,
+                (now - g_doorUse.at) / 1000.0);
+        }
+        else if (o && doorTrigger(o, state, key))
         {
             LOG("AutoAttack: door {:x} clicked {:.1f} s ago: now {} (trigger state {:x}, key {:x}, at {},{})", g_doorUse.id,
                 (now - g_doorUse.at) / 1000.0, (state & 1) ? "OPEN" : "still shut", state, key, o->x / 53, o->y / 53);
@@ -1154,7 +1165,21 @@ namespace
             }
             return true;
         }
-        if (!target->asCreature() && walkFirst(self, target->x, target->y))
+        // A door is clicked only from beside it, the hero walked up first (3 tiles: the use point lies a step before or behind
+        // it; the stuck solver, 2026-11-17: 6 clicks in 20 min from 10-38 tiles off, one door opened): the walk goes on
+        // from doorPendingTick until the click can go out.
+        if (!target->asCreature() && isDoorObject(target))
+        {
+            if (walkFirst(self, target->x, target->y, static_cast<int32_t>(3.0 * kTileSize)))
+            {
+                if (g_doorPending.id != id)
+                {
+                    g_doorPending = {id, GetTickCount(), 0};
+                }
+                return true;
+            }
+        }
+        else if (!target->asCreature() && walkFirst(self, target->x, target->y))
         {
             return true;
         }
@@ -1183,6 +1208,32 @@ namespace
         order.x = target->x;
         order.y = target->y;
         return clickOn(self, order);
+    }
+
+    // The walk up to a door goes on (attack() sent it as a walk order, once): asked again every second until the click goes out
+    // or 25 s pass.
+    void doorPendingTick(DWORD now)
+    {
+        DoorPending& p = g_doorPending;
+        if (!p.id)
+        {
+            return;
+        }
+        if (now - p.since > 25000 || (g_doorUse.id == p.id && g_doorUse.at >= p.since))
+        {
+            p = DoorPending{};
+            return;
+        }
+        if (now - p.askedAt < 1000)
+        {
+            return;
+        }
+        p.askedAt = now;
+        g_doorHoldUntil = now + 1500;
+        if (!attack(p.id))
+        {
+            p = DoorPending{};
+        }
     }
 
     // Natural pace: a look at the situation every so often, a moment before acting on a new aim, orders repeated at
@@ -11642,6 +11693,7 @@ void AutoAttack::onFrame()
     if (foreground && !Controller::drives() && heroAlive())
     {
         doorUseCheck(now);
+        doorPendingTick(now);
         Gear::onFrame(now, !g_collecting && !g_target && !g_pending && !g_retreatUntil && !Tactics::busy(now));
         HeroBuild::onFrame(now, !g_target && !g_retreatUntil && !Tactics::busy(now));
     }
