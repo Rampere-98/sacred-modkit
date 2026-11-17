@@ -44,6 +44,8 @@ namespace RouteNet
     // Whether tile (x, y) lies inside the interior a door of the net lands in at (landX, landY) (within 6 tiles): the
     // interior's walkable part by the world files, as a box.
     bool insideOf(int landX, int landY, int x, int y);
+    // Whether tiles (ax, ay) and (bx, by) both lie inside one interior a door of the net lands in (its box).
+    bool sameInterior(int ax, int ay, int bx, int by);
     // The tile to step on to go through a door whose landing is (landX, landY) on `layer`, the hero at (heroX, heroY):
     // a cave's zone beside the landing (Teleports::caveTriggerNear), else the stairs anchor nearest the hero
     // (Teleports::anchorsNear), else the landing. On the game's thread (both read its memory).
