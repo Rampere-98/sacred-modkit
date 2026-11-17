@@ -4253,6 +4253,35 @@ namespace
         uint32_t objectiveKey = 0;
     } g_orderPick;
 
+    // Whether the game's list of the hero's companions (hero+0x39C..+0x3A0, records of 9 bytes, +0 the id, +8 non-zero for a
+    // hired mercenary) holds a live creature the script made follow: an escorted man (Manolito, AGENT_ADDRESSES
+    // «Escolta»). False when the list does not read well.
+    bool escorteeFollows()
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        const cCreature* hero = objects ? objects->hero() : nullptr;
+        if (!hero)
+        {
+            return true;    // nothing known: nothing done
+        }
+        const uint8_t* heroBytes = reinterpret_cast<const uint8_t*>(hero);
+        const auto begin = *reinterpret_cast<const uint8_t* const*>(heroBytes + 0x39C);
+        const auto end = *reinterpret_cast<const uint8_t* const*>(heroBytes + 0x3A0);
+        if (begin && (end < begin || ((end - begin) % 9) || (end - begin) / 9 > 8))
+        {
+            return true;
+        }
+        for (const uint8_t* r = begin; r && r < end; r += 9)
+        {
+            const cCreature* c = objects->creature(*reinterpret_cast<const uint32_t*>(r));
+            if (c && c->health > 0 && r[8] == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Called each step the agent goes for its quest goal (not while farming, paused or held): the goal picked, gone
     // for 20 min in all with no step of it done and never 10 tiles nearer than before, is skipped 30 min, then tried
     // again (its giver unreachable, a step the agent cannot do). Escorts and deadlines (tier 2) are never skipped so;
@@ -4272,6 +4301,33 @@ namespace
         if (p.number <= 0 || p.kind == GoalKind::Giver || g_detouring)
         {
             return;
+        }
+        // An escort at its place without the one escorted (the stuck solver, 2026-11-17, A5: Escolta 202, Jacob to the West
+        // Bridge at 2661,3055; the journal holds it, the hero's companions list only a hired mercenary, and it walked to
+        // the bridge alone three times in 2 h, «at the quest's goal: looking around it» 5-10 min each time and the quest
+        // never done; the escorted one was left behind, where, nothing in the log says): after 3 min there alone, the
+        // quest is skipped as any other that goes nowhere (30 min, then at the end of the list until the journal changes).
+        {
+            static std::unordered_map<int32_t, DWORD> s_aloneSince;
+            if (p.tier >= 2 && p.kind == GoalKind::Journal && Lore::questKind() == Lore::QuestKind::Escort &&
+                p.distance < 25.0 * kTileSize && !escorteeFollows())
+            {
+                DWORD& since = s_aloneSince[p.number];
+                if (!since)
+                {
+                    since = now;
+                }
+                else if (now - since > 180000)
+                {
+                    since = 0;
+                    orderSkip(p.number, now, "an escort at its place without the one escorted");
+                    return;
+                }
+            }
+            else
+            {
+                s_aloneSince.erase(p.number);
+            }
         }
         auto [it, fresh] = s_clocks.try_emplace(p.number);
         Clock& c = it->second;
