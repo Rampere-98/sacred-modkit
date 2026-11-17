@@ -4314,9 +4314,22 @@ namespace
         return -1;
     }
 
+    // The pieces in the storage beaten by a better one of the same body slot and purpose (the owner, 2026-11-17 17:10:
+    // «saber hacer upgrade en lo que tiene en el almacén: comparar con el objeto del mismo estilo y escoger el
+    // mejor»): taken out at the next visit and sold at the next merchant, never dropped.
+    struct Beaten
+    {
+        uint32_t by = 0;
+        int slot = 0, element = 0;
+        float from = 0.0f, to = 0.0f;
+    };
+    std::unordered_map<uint32_t, Beaten> g_storageOut;
+    constexpr const char* kElementName[4] = {"physical", "fire", "magic", "poison"};
+
     // The pieces worth keeping for other zones: no weapon (the slots keep those), for this class, not better than what
     // the hero wears for everywhere (that one is put on instead), with a resistance to fire, magic or poison of 5 or
-    // more; the two best of each body slot and element, in the backpack and the storage together.
+    // more and above what the hero wears in that slot; the best of each body slot and element (one: 2026-11-17, was
+    // two), in the backpack and the storage together, then the better score.
     std::unordered_set<uint32_t> storageKeep(cCreature* hero, uint8_t* pack, uint8_t* store)
     {
         struct Piece
@@ -4324,6 +4337,8 @@ namespace
             uint32_t id;
             int key;
             float resist;
+            float score;
+            bool stored;
         };
         std::vector<Piece> all;
         // Kept only with a storage chest near and room in it (the reviewer, S2): else sold as before.
@@ -4360,26 +4375,57 @@ namespace
             {
                 e = r[k] > r[e] ? k : e;
             }
+            // What the hero wears there already resists as much: nothing to keep it for
+            if (const uint32_t worn = fn<GetEquipped>(g_getEquipped)(hero, nullptr, slot); worn && worn != id)
+            {
+                float wr[4];
+                resistOf(hero, worn, wr);
+                if (wr[e] >= r[e])
+                {
+                    if (stored)
+                    {
+                        g_storageOut[id] = {worn, slot, e, r[e], wr[e]};
+                    }
+                    return;
+                }
+            }
             if (r[e] >= 5.0f)
             {
-                all.push_back({id, slot * 4 + e, r[e]});
+                all.push_back({id, slot * 4 + e, r[e], worth(id).score, stored});
             }
         };
+        g_storageOut.clear();
         eachItem(pack, [&](uint32_t id, int, int, int) { consider(id, false); });
         if (store)
         {
             eachItem(store, [&](uint32_t id, int, int, int) { consider(id, true); });
         }
         std::sort(all.begin(), all.end(), [](const Piece& a, const Piece& b) {
-            return a.key != b.key ? a.key < b.key : a.resist > b.resist;
+            return a.key != b.key ? a.key < b.key : a.resist != b.resist ? a.resist > b.resist : a.score > b.score;
         });
         std::unordered_set<uint32_t> keep;
-        for (size_t i = 0, n = 0; i < all.size(); ++i)
+        static std::unordered_set<uint64_t> s_told;
+        for (size_t i = 0, first = 0; i < all.size(); ++i)
         {
-            n = i > 0 && all[i].key == all[i - 1].key ? n + 1 : 0;
-            if (n < 2)
+            first = i > 0 && all[i].key == all[i - 1].key ? first : i;
+            if (first == i)
             {
                 keep.insert(all[i].id);
+                continue;
+            }
+            // Beaten by the first of its slot and purpose: out of the storage if there, sold if in the backpack
+            const Piece& win = all[first];
+            if (all[i].stored)
+            {
+                g_storageOut[all[i].id] = {win.id, all[i].key / 4, all[i].key % 4, all[i].resist, win.resist};
+            }
+            const uint64_t pair = (static_cast<uint64_t>(win.id) << 32) | all[i].id;
+            if (all[i].stored && s_told.insert(pair).second)
+            {
+                LOG("Gear: storage: {:x} (slot {}, {} {:.0f}) replaces {:x} (resistance {:.0f} -> {:.0f}, score {:.0f} -> "
+                    "{:.0f}): the old one out and sold",
+                    win.id, win.key / 4, kElementName[win.key % 4], win.resist, all[i].id, all[i].resist, win.resist,
+                    all[i].score, win.score);
             }
         }
         // And what else is worth keeping, in the storage and not the backpack (the player, 2026-11-16: «si guarda
@@ -4404,6 +4450,7 @@ namespace
         {
             eachItem(store, setPiece);
         }
+        std::erase_if(g_storageOut, [&](const auto& e) { return keep.count(e.first) != 0; });
         return keep;
     }
 
@@ -4483,6 +4530,11 @@ namespace
                                     bestSlot(hero, id, 0.05f) >= 0);
                 });
             }
+            // The beaten ones in the storage: a visit to take them out
+            if (store)
+            {
+                eachItem(store, [&](uint32_t id, int, int, int) { put = put || g_storageOut.count(id); });
+            }
             const bool fresh = g_storageKeep.size() > g_storageKeptBefore;
             const bool prep = g_prepStore.load();    // the town stop: the chest now, whatever the last visit
             g_wantStore = put && (prep || !g_storageVisitAt || now - g_storageVisitAt > 600000 || fresh);
@@ -4538,6 +4590,37 @@ namespace
                 g_storageDone = true;
                 g_storageAt = now;
                 return false;
+            }
+            // One beaten piece out (a better one of its slot and purpose kept, or worn): to the backpack, sold at the
+            // next merchant (not kept any more). Not a weapon (none is stored), a rune nor a quest item.
+            if (uint8_t* box = entryOf(kStoreEntry))
+            {
+                uint32_t beaten = 0;
+                eachItem(box, [&](uint32_t id, int, int, int) {
+                    const auto o = reinterpret_cast<const uint8_t*>(objects ? objects->object(id) : nullptr);
+                    if (!beaten && g_storageOut.count(id) && !g_visitIn.count(id) && !g_visitOut.count(id) &&
+                        !(flagsOf(id) & kQuestItem) && !worth(id).weapon &&
+                        !(o && *reinterpret_cast<const uintptr_t*>(o) == kRuneVtable))
+                    {
+                        beaten = id;
+                    }
+                });
+                if (beaten)
+                {
+                    const Beaten b = g_storageOut[beaten];
+                    const bool moved =
+                        reinterpret_cast<MoveItem>(kMoveItem)(inv, nullptr, kStoreEntry, heroIdx, beaten, heroIdx) != 0;
+                    g_visitOut.insert(beaten);
+                    LOG("Gear: storage: {:x} (type {:x}, slot {}, {} {:.0f}) {}: {:x} is better ({:.0f})", beaten,
+                        typeOf(beaten), b.slot, kElementName[b.element], b.from,
+                        moved ? "taken out, to be sold" : "not taken out: no room in the backpack", b.by, b.to);
+                    if (moved)
+                    {
+                        g_storageOut.erase(beaten);
+                        g_storageFullAt = 0;
+                        return true;
+                    }
+                }
             }
             // One kept piece in.
             uint32_t in = 0;
