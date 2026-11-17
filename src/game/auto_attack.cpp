@@ -4444,6 +4444,26 @@ namespace
                     std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
                         return o.kind == GoalKind::Journal && o.number == q.number;
                     });
+                // A giver come to whose quest was not taken (its sign not shown yet: a quest before it, the hero's
+                // level) is gone to again once the hero has gained a level or done a quest since (the coordinator,
+                // 2026-11-17: 40 quests so in the 8 copies, A5's 151 among them, the giver never tried again).
+                if (value != s_values.end() && value->second == 1 && !inJournal)
+                {
+                    static std::unordered_map<int32_t, std::pair<int, int>> s_visitedWhen;    // level, quests done
+                    if (const auto v = std::find(s_visited.begin(), s_visited.end(), q.number); v != s_visited.end())
+                    {
+                        const auto [when, fresh] = s_visitedWhen.try_emplace(q.number, heroLv, g_questsDone);
+                        if (!fresh && heroLv > 0 && (heroLv > when->second.first || g_questsDone > when->second.second))
+                        {
+                            s_visited.erase(v);
+                            g_giverTime.erase(q.number);
+                            LOG("AutoAttack: the giver of quest {} gone to again: the hero has gained a level or done a "
+                                "quest since (level {} -> {}, quests done {} -> {})",
+                                q.number, when->second.first, heroLv, when->second.second, g_questsDone);
+                            s_visitedWhen.erase(when);
+                        }
+                    }
+                }
                 if (value == s_values.end() || value->second != 1 || inJournal ||
                     std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end())
                 {
@@ -7661,7 +7681,9 @@ namespace
             // Two far walks in 10 min that got nowhere (the stuck solver, 2026-11-16: A4 26 min and not one fight, its
             // goals 566, 649, 652 and 699 tiles out in turn, each left after 25 s on the same spot): the experience
             // first, near; the far goals are tried again after the 10 min.
-            if (g_farFails >= 2 && g_farFailAt && tick - g_farFailAt < 600000 &&
+            // (Not while the quests come first, the owner 2026-11-17: farming only for the next quest's level or for
+            // safety; a far goal that gets nowhere is skipped by the quest order instead.)
+            if (false && g_farFails >= 2 && g_farFailAt && tick - g_farFailAt < 600000 &&
                 std::hypot(static_cast<double>(x - self->x), static_cast<double>(y - self->y)) > 300.0 * kTileSize)
             {
                 setIntent(Intent::Farm, "far goals got nowhere twice lately: farming near first");
@@ -7714,7 +7736,9 @@ namespace
         // Neither a fight nor a quest done in 8 min while seeing to quests (the analyst, 2026-11-11: A5 «looking around»
         // its goals with 16 under way, 3 fights in 19 min, 8 of 9 half hours under 1600 experience): farming 10 min
         // first, a player gains levels before going on.
-        if (!deadline && g_intent == Intent::Quest && g_farmKnown && Config::autoAttack.farm && g_lastTargetAt &&
+        // (Off: farming only for the next quest's level or for safety, the owner 2026-11-17; a quest that gets nowhere
+        // is skipped by the quest order.)
+        if (false && !deadline && g_intent == Intent::Quest && g_farmKnown && Config::autoAttack.farm && g_lastTargetAt &&
             now - g_lastTargetAt > 480000 && (!g_questsDoneAt || now - g_questsDoneAt > 480000) &&
             (!g_questPauseUntil || static_cast<int>(now - g_questPauseUntil) >= 0))
         {

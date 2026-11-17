@@ -5026,8 +5026,9 @@ bool Gear::wantsShopOwn()
     // At 3 left of a stock of 8 (2 for a stock of 5; the stuck solver, 2026-11-16: a merchant sells about five a visit,
     // «no healing potion on sale», and the trip at 2 left the hero with 5-7 of 8, gone again in minutes). The same test
     // holds back the seek and the craftsmen's trips (wantsShop), as it did at 2.
-    const bool potions = g_settings.buy && g_healing >= 0 && (g_healing <= std::max(2, wantHealing() / 2 - 1) || askedNow) &&
-                         gold >= 200;
+    // At 2 left, whatever the stock (the owner, 2026-11-17: the quests first; it was 3 of 8). A backpack near full
+    // still sells before it is full (the owner's rule).
+    const bool potions = g_settings.buy && g_healing >= 0 && (g_healing <= 2 || askedNow) && gold >= 200;
     return g_ready && g_settings.trips && (g_full || g_nearFull || potions) && (!quiet || static_cast<int>(GetTickCount() - quiet) >= 0) &&
            (Act::may(Act::Kind::Sell) || Act::may(Act::Kind::Buy));
 }
