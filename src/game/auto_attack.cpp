@@ -8740,10 +8740,14 @@ namespace
                     // Only a door nearer than the goal itself (a house's inside placed far off on the map): one 2893
                     // tiles off for a goal 37 tiles away swapped with it every second (the player saw it looping,
                     // 2026-11-10: «quiere abrir puertas a km de distancia»).
-                    const double d = std::hypot(in.inX - gtx, in.inY - gty);
+                    // The goal inside the interior this door lands in (the net's box of it, by the world files): that
+                    // door, however far the goal from the landing (A5, 2026-11-17: quest 701's goal 4101,624, 74 tiles
+                    // from cave 17.2's landing 4037,662; at 40 the hero stood at the door, 3176,1930, and never went in).
+                    const bool inBox = RouteNet::insideOf(in.inX, in.inY, gtx, gty) && !RouteNet::insideOf(in.inX, in.inY, htx, hty);
+                    const double d = inBox ? 0.0 : std::hypot(in.inX - gtx, in.inY - gty);
                     const double toDoor = std::hypot(in.outX - htx, in.outY - hty);
                     const double toGoal = std::hypot(gtx - htx, gty - hty);
-                    if (d < bestIn && std::hypot(in.inX - htx, in.inY - hty) > 60.0 && toDoor < toGoal * 0.8 &&
+                    if (d < bestIn && (inBox || std::hypot(in.inX - htx, in.inY - hty) > 60.0) && toDoor < toGoal * 0.8 &&
                         toDoor < 300.0)
                     {
                         bestIn = d;

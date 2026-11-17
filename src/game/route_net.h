@@ -33,4 +33,19 @@ namespace RouteNet
     // Whether any point of the trip kept for (toX, toY) on `layer`, from the one the hero is nearest on, satisfies `hit`
     // (tiles). False when the net has no trip kept for that goal.
     bool tripPasses(int layer, int toX, int toY, bool (*hit)(int tx, int ty));
+
+    // The game's doors in the net (tools/red_rutas.py red --defpos: "P" lines, DefPos' tpreinz/tprausz and
+    // tpstart/tptarget; A5, 2026-11-17: quest 701's goal 4101,624 inside cave 17.2, an interior placed far off on the map,
+    // its door at 3176,1930). A trip through one ends `out` at the door's landing; the hero then steps on the door (the
+    // game's own jump) and lands at the other one, where the trip goes on.
+    // True when the trip kept for (toX, toY) on `layer` has a door next, its landing within 10 tiles of the hero at
+    // (heroX, heroY): that landing and the door's name (DefPos' suffix, "17.2").
+    bool doorAhead(int layer, int heroX, int heroY, int toX, int toY, int& landX, int& landY, const char*& name);
+    // Whether tile (x, y) lies inside the interior a door of the net lands in at (landX, landY) (within 6 tiles): the
+    // interior's walkable part by the world files, as a box.
+    bool insideOf(int landX, int landY, int x, int y);
+    // The tile to step on to go through a door whose landing is (landX, landY) on `layer`, the hero at (heroX, heroY):
+    // a cave's zone beside the landing (Teleports::caveTriggerNear), else the stairs anchor nearest the hero
+    // (Teleports::anchorsNear), else the landing. On the game's thread (both read its memory).
+    void doorStep(int layer, int landX, int landY, int heroX, int heroY, int& stepX, int& stepY);
 }
