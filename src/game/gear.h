@@ -98,6 +98,9 @@ namespace Gear
     bool storageOpen();
     // A storage chest clicked whose window has not opened yet (and the visit not over): the trip still to be held.
     bool storagePending();
+    // Pieces marked to sell in the storage and the town stop's merchant next (not a full backpack's, that one first):
+    // the chest before the merchant, to take them out and sell them there.
+    bool storageFirst();
     // The agent sorting the backpack (its inventory window opened for it, up to 5 s): not a window left open.
     bool sorting();
     // Weapon slot `slot`'s weapons, for the arts that need a kind of weapon: bit 0 read, bit 1 a ranged weapon in it,

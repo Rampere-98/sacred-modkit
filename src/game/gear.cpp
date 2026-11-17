@@ -2008,6 +2008,25 @@ namespace
         return (w * h - used) * 100 < w * h * 15;
     }
 
+    // The free squares of a grid (the backpack's, the storage's), its squares in `cells`; 0 and 0 when unreadable.
+    int freeCellsOf(uint8_t* entry, int* cells)
+    {
+        *cells = 0;
+        if (!entry)
+        {
+            return 0;
+        }
+        const int w = *reinterpret_cast<uint16_t*>(entry + 0x115C), h = *reinterpret_cast<uint16_t*>(entry + 0x115E);
+        if (w <= 0 || h <= 0 || w * h > 0x400)
+        {
+            return 0;
+        }
+        int used = 0;
+        eachItem(entry, [&](uint32_t, int, int iw, int ih) { used += iw * ih; });
+        *cells = w * h;
+        return std::max(0, w * h - used);
+    }
+
     // An item left in the cursor's hand (seen live, 2026-11-09: a healing potion picked up while the inventory was
     // open stayed there): into the backpack once it has been held 3 s (a drag of the player's is quicker). The hand:
     // cMouse at [0xCDDB5C], +0x68 the held entry (+0 u16 kind, 1 an item; +4 its id), Manolito's catalogue «Objeto en el
@@ -4391,6 +4410,10 @@ namespace
     // This visit's moves: what went in does not come out, nor the other way (the reviewer, S1).
     std::unordered_set<uint32_t> g_visitIn, g_visitOut;
     std::atomic<DWORD> g_storageAt{0};          // when it was used, then when the work in it was done
+    std::atomic<bool> g_storageOutWaiting{false};   // beaten or useless pieces in the storage, marked to be sold
+    // A piece resisting this many times another's wins the storage's place for that purpose whatever their rarity
+    // (the owner's rule asked, 2026-11-17 17:51: «más del 50 % mejor gana aunque sea menos raro»).
+    constexpr float kResistOverRarity = 1.5f;
     std::atomic<bool> g_storageDone{false};     // the work done: closing
     std::atomic<bool> g_storageShown{false};    // the chest's window seen open this visit
     DWORD g_storageVisitAt = 0;                 // the last visit (none wanted again for 10 min but for a new piece)
@@ -4441,11 +4464,15 @@ namespace
             int grade;
         };
         std::vector<Piece> all;
-        // Kept only with a storage chest near and room in it (the reviewer, S2): else sold as before.
-        if (!AutoAttack::storageNear())
-        {
-            return {};
-        }
+        // Judged everywhere (the owner, 2026-11-17 17:51; A3: «storage holds 34: kept 0, to take out 0, else 34»: it was
+        // judged only within 40 tiles of a chest, and the visit found the keep worked out away from it, empty). The
+        // backpack's pieces are kept for it only with a chest near or a quarter of the backpack free, and the storage
+        // under 70 % of its squares (the reviewer, S2: else sold as before).
+        const bool chestNear = AutoAttack::storageNear();
+        int packCells = 0, boxCells = 0;
+        const int packFree = freeCellsOf(pack, &packCells);
+        const int boxFree = freeCellsOf(store, &boxCells);
+        const bool roomy = !boxCells || (boxCells - boxFree) * 10 < boxCells * 7;
         // Full lately: the storage's own pieces still judged (the beaten and useless ones out, the owner, 2026-11-17:
         // «veo que el almacén lo tienen lleno»), none of the backpack's kept for it.
         const bool full = g_storageFullAt && GetTickCount() - g_storageFullAt < 1800000;
@@ -4503,24 +4530,49 @@ namespace
         {
             eachItem(store, [&](uint32_t id, int, int, int) { consider(id, true); });
         }
-        std::sort(all.begin(), all.end(), [](const Piece& a, const Piece& b) {
-            return a.key != b.key       ? a.key < b.key
-                   : a.grade != b.grade   ? a.grade > b.grade
-                   : a.resist != b.resist ? a.resist > b.resist
-                                          : a.score > b.score;
-        });
+        // The one kept for each slot and purpose (the owner, 2026-11-17 17:51: A3 «1840 (slot 1, magic 54) taken out:
+        // f41 is better (36)»): for the same purpose the resistance rules, the rarity only between near ones: one
+        // resisting kResistOverRarity times the other's (50 % more) wins whatever its rarity; else the rarer, then the
+        // higher resistance, then the score.
+        std::stable_sort(all.begin(), all.end(), [](const Piece& a, const Piece& b) { return a.key < b.key; });
+        const auto over = [](const Piece& c, const Piece& w) {
+            if (c.resist >= w.resist * kResistOverRarity)
+            {
+                return true;
+            }
+            if (w.resist >= c.resist * kResistOverRarity)
+            {
+                return false;
+            }
+            return c.grade != w.grade     ? c.grade > w.grade
+                   : c.resist != w.resist ? c.resist > w.resist
+                                          : c.score > w.score;
+        };
+        std::vector<size_t> winOf(all.size());
+        for (size_t first = 0; first < all.size();)
+        {
+            size_t end = first, win = first;
+            for (; end < all.size() && all[end].key == all[first].key; ++end)
+            {
+                win = over(all[end], all[win]) ? end : win;
+            }
+            for (size_t i = first; i < end; ++i)
+            {
+                winOf[i] = win;
+            }
+            first = end;
+        }
         std::unordered_set<uint32_t> keep;
         static std::unordered_set<uint64_t> s_told;
-        for (size_t i = 0, first = 0; i < all.size(); ++i)
+        for (size_t i = 0; i < all.size(); ++i)
         {
-            first = i > 0 && all[i].key == all[i - 1].key ? first : i;
-            if (first == i)
+            if (winOf[i] == i)
             {
                 keep.insert(all[i].id);
                 continue;
             }
-            // Beaten by the first of its slot and purpose: out of the storage if there, sold if in the backpack
-            const Piece& win = all[first];
+            // Beaten by the one kept of its slot and purpose: out of the storage if there, sold if in the backpack
+            const Piece& win = all[winOf[i]];
             if (all[i].stored)
             {
                 g_storageOut[all[i].id] = {win.id, all[i].key / 4, all[i].key % 4, all[i].resist, win.resist};
@@ -4528,10 +4580,10 @@ namespace
             const uint64_t pair = (static_cast<uint64_t>(win.id) << 32) | all[i].id;
             if (all[i].stored && s_told.insert(pair).second)
             {
-                LOG("Gear: storage: {:x} (slot {}, {} {:.0f}) replaces {:x} (resistance {:.0f} -> {:.0f}, score {:.0f} -> "
-                    "{:.0f}): the old one out and sold",
-                    win.id, win.key / 4, kElementName[win.key % 4], win.resist, all[i].id, all[i].resist, win.resist,
-                    all[i].score, win.score);
+                LOG("Gear: storage: {:x} (slot {}, {} {:.0f}, {}) replaces {:x} (resistance {:.0f} -> {:.0f}, {} -> {}, "
+                    "score {:.0f} -> {:.0f}): the old one out and sold",
+                    win.id, win.key / 4, kElementName[win.key % 4], win.resist, gradeName(win.grade), all[i].id,
+                    all[i].resist, win.resist, gradeName(all[i].grade), gradeName(win.grade), all[i].score, win.score);
             }
         }
         // And what else is worth keeping, in the storage and not the backpack (the player, 2026-11-16: «si guarda
@@ -4555,6 +4607,50 @@ namespace
         if (store)
         {
             eachItem(store, setPiece);
+        }
+        // And what the backpack holds over its use (the owner, 2026-11-17 17:51: «que guarde también lo bueno que no va
+        // puesto [...] pociones y gemas sobrantes»): the healing potions past twice the stock (or the count wanted),
+        // the other potions past twice the guide's, the gems past the smith's 4 (none while gems go to a smith); the
+        // stored ones stay in (storageStep takes them out again when the backpack runs short).
+        {
+            int gems = 0, healing = 0, extra[std::size(kExtraPotions)] = {};
+            const int healingKept = std::max(2 * Mind::now().potionStock, wantHealing());
+            const bool gemsFree = !g_socketBase.load();
+            eachItem(pack, [&](uint32_t id, int, int, int) {
+                if (flagsOf(id) & kQuestItem)
+                {
+                    return;
+                }
+                const uint32_t type = typeOf(id);
+                if (healingType(type))
+                {
+                    if (++healing > healingKept)
+                    {
+                        keep.insert(id);
+                    }
+                }
+                else if (const int k = extraKind(type); k >= 0)
+                {
+                    if (++extra[k] > 2 * kExtraPotions[k].want)
+                    {
+                        keep.insert(id);
+                    }
+                }
+                else if (gemsFree && socketable(id) && ++gems > kGemsKept)
+                {
+                    keep.insert(id);
+                }
+            });
+            if (store)
+            {
+                eachItem(store, [&](uint32_t id, int, int, int) {
+                    const uint32_t type = typeOf(id);
+                    if (!(flagsOf(id) & kQuestItem) && (healingType(type) || extraKind(type) >= 0 || socketable(id)))
+                    {
+                        keep.insert(id);
+                    }
+                });
+            }
         }
         // Every other piece in the storage is of no use now: another class's, worse than worn everywhere, too low a
         // resistance or level, no zone's piece nor a future upgrade nor a set's: out and sold. Never a weapon (none is
@@ -4580,7 +4676,7 @@ namespace
             });
         }
         std::erase_if(g_storageOut, [&](const auto& e) { return keep.count(e.first) != 0; });
-        if (full)
+        if (full || !roomy || (!chestNear && packFree * 4 < packCells))
         {
             std::erase_if(keep, [&](uint32_t id) { return !stored.count(id); });
         }
@@ -4649,6 +4745,13 @@ namespace
         const DWORD now = GetTickCount();
         static DWORD s_lookAt = 0;
         uint8_t* store = entryOf(kStoreEntry);
+        // Worked out anew as a visit begins (not the one of 10 s before, away from the chest)
+        static DWORD s_visitLook = 0;
+        if (g_storageId.load() && g_storageAt.load() != s_visitLook)
+        {
+            s_visitLook = g_storageAt.load();
+            s_lookAt = 0;
+        }
         if (!s_lookAt || now - s_lookAt > 10000)
         {
             s_lookAt = now | 1;
@@ -4663,11 +4766,25 @@ namespace
                                     bestSlot(hero, id, 0.05f) >= 0);
                 });
             }
-            // The beaten ones in the storage: a visit to take them out
+            // The potions and gems kept there, back when the backpack runs short
             if (store)
             {
-                eachItem(store, [&](uint32_t id, int, int, int) { put = put || g_storageOut.count(id); });
+                int gems = 0;
+                eachItem(pack, [&](uint32_t id, int, int, int) { gems += socketable(id) ? 1 : 0; });
+                const bool fewHealing = countHealing(pack) < wantHealing(), fewGems = gems < kGemsKept && !g_socketBase.load();
+                eachItem(store, [&](uint32_t id, int, int, int) {
+                    take = take || (fewHealing && healingType(typeOf(id))) || (fewGems && socketable(id));
+                });
             }
+            // The beaten ones in the storage: a visit to take them out only with the merchant next (the town stop's,
+            // not a full backpack's: that one first), else they wait there marked (the owner, 2026-11-17 17:51)
+            bool waiting = false;
+            if (store)
+            {
+                eachItem(store, [&](uint32_t id, int, int, int) { waiting = waiting || g_storageOut.count(id); });
+            }
+            g_storageOutWaiting = waiting;
+            put = put || (waiting && Gear::prepShopOnly());
             const bool fresh = g_storageKeep.size() > g_storageKeptBefore;
             const bool prep = g_prepStore.load();    // the town stop: the chest now, whatever the last visit
             g_wantStore = put && (prep || !g_storageVisitAt || now - g_storageVisitAt > 600000 || fresh);
@@ -4726,18 +4843,38 @@ namespace
             }
             // One beaten piece out (a better one of its slot and purpose kept, or worn): to the backpack, sold at the
             // next merchant (not kept any more). Not a weapon (none is stored), a rune nor a quest item.
+            // Only what fits leaving a quarter of the backpack free, and only with the merchant the next stop (the owner,
+            // 2026-11-17 17:51: all of it out at once filled the backpack until a shop); else left there marked to sell.
             if (uint8_t* box = entryOf(kStoreEntry))
             {
                 uint32_t beaten = 0;
-                eachItem(box, [&](uint32_t id, int, int, int) {
+                int marked = 0, packCells = 0;
+                const int packFree = freeCellsOf(pack, &packCells);
+                const bool shopNext = Gear::prepShopOnly();
+                eachItem(box, [&](uint32_t id, int, int bw, int bh) {
                     const auto o = reinterpret_cast<const uint8_t*>(objects ? objects->object(id) : nullptr);
-                    if (!beaten && g_storageOut.count(id) && !g_visitIn.count(id) && !g_visitOut.count(id) &&
+                    if (g_storageOut.count(id) && !g_visitIn.count(id) && !g_visitOut.count(id) &&
                         !(flagsOf(id) & kQuestItem) && !worth(id).weapon &&
                         !(o && *reinterpret_cast<const uintptr_t*>(o) == kRuneVtable))
                     {
-                        beaten = id;
+                        if (!beaten && shopNext && packCells && (packFree - bw * bh) * 4 >= packCells)
+                        {
+                            beaten = id;
+                        }
+                        else
+                        {
+                            ++marked;
+                        }
                     }
                 });
+                static DWORD s_markedVisit = 0;
+                if (!beaten && marked && s_markedVisit != g_storageVisitAt)
+                {
+                    s_markedVisit = g_storageVisitAt;
+                    LOG("Gear: storage: {} pieces marked to sell, left in the storage ({}; backpack {} of {} squares free)",
+                        marked, shopNext ? "no room for them keeping a quarter of the backpack free" : "no merchant next",
+                        packFree, packCells);
+                }
                 if (beaten)
                 {
                     const Beaten b = g_storageOut[beaten];
@@ -4798,6 +4935,33 @@ namespace
                 if (moved)
                 {
                     return true;
+                }
+            }
+            // A healing potion back when the backpack holds fewer than wanted, a gem when fewer than the smith's 4.
+            if (uint8_t* box = entryOf(kStoreEntry))
+            {
+                int gems = 0;
+                eachItem(pack, [&](uint32_t id, int, int, int) { gems += socketable(id) ? 1 : 0; });
+                const bool fewHealing = countHealing(pack) < wantHealing(), fewGems = gems < kGemsKept && !g_socketBase.load();
+                uint32_t back = 0;
+                eachItem(box, [&](uint32_t id, int, int, int) {
+                    if (!back && !g_visitIn.count(id) && !g_visitOut.count(id) &&
+                        ((fewHealing && healingType(typeOf(id))) || (fewGems && socketable(id))))
+                    {
+                        back = id;
+                    }
+                });
+                if (back)
+                {
+                    const bool moved = reinterpret_cast<MoveItem>(kMoveItem)(inv, nullptr, kStoreEntry, heroIdx, back, heroIdx) != 0;
+                    g_visitOut.insert(back);
+                    LOG("Gear: storage: {:x} (type {:x}) {}", back, typeOf(back),
+                        moved ? "taken out: the backpack short of it" : "not taken out: no room in the backpack");
+                    if (moved)
+                    {
+                        g_storageFullAt = 0;
+                        return true;
+                    }
                 }
             }
             // One piece out, better for where the hero is going (the equipping puts it on after).
@@ -5917,6 +6081,11 @@ bool Gear::chooseWeaponFor(uint32_t targetId)
 bool Gear::wantsStorage()
 {
     return Act::may(Act::Kind::Storage) && (g_wantStore.load() || g_wantTake.load());
+}
+
+bool Gear::storageFirst()
+{
+    return g_storageOutWaiting.load() && Gear::prepShopOnly() && Act::may(Act::Kind::Storage);
 }
 
 void Gear::storageUsed(uint32_t id)
