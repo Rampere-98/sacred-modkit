@@ -4986,11 +4986,18 @@ namespace
                 readCaps(now);
             }
             Cap& c = g_caps[g.number];
-            if (!c.since || c.done != g_questsDone || c.failed != g_questsFailed)
+            // Only a quest done: a failure and the load after it move the failed count up and down (A5 701, 2026-11-17:
+            // «28 done, 2 failed» then «1 failed», each such change began every clock anew)
+            if (!c.since || g_questsDone > c.done)
             {
                 c.since = now ? now : 1;
                 c.done = g_questsDone;
                 c.failed = g_questsFailed;
+                g_capsDirty = true;
+            }
+            else if (g_questsDone < c.done)
+            {
+                c.done = g_questsDone;  // an older save loaded: the clock goes on
                 g_capsDirty = true;
             }
             if (now - c.since > 2700000)
