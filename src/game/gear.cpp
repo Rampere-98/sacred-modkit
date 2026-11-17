@@ -4533,28 +4533,32 @@ namespace
         // The one kept for each slot and purpose (the owner, 2026-11-17 17:51: A3 «1840 (slot 1, magic 54) taken out:
         // f41 is better (36)»): for the same purpose the resistance rules, the rarity only between near ones: one
         // resisting kResistOverRarity times the other's (50 % more) wins whatever its rarity; else the rarer, then the
-        // higher resistance, then the score.
+        // higher resistance, then the score. Whatever the grid's order: the candidates are the ones the top resistance
+        // does not beat by more than that, and the rarer of them is kept.
         std::stable_sort(all.begin(), all.end(), [](const Piece& a, const Piece& b) { return a.key < b.key; });
-        const auto over = [](const Piece& c, const Piece& w) {
-            if (c.resist >= w.resist * kResistOverRarity)
-            {
-                return true;
-            }
-            if (w.resist >= c.resist * kResistOverRarity)
-            {
-                return false;
-            }
-            return c.grade != w.grade     ? c.grade > w.grade
-                   : c.resist != w.resist ? c.resist > w.resist
-                                          : c.score > w.score;
-        };
         std::vector<size_t> winOf(all.size());
         for (size_t first = 0; first < all.size();)
         {
-            size_t end = first, win = first;
+            size_t end = first;
+            float top = 0.0f;
             for (; end < all.size() && all[end].key == all[first].key; ++end)
             {
-                win = over(all[end], all[win]) ? end : win;
+                top = std::max(top, all[end].resist);
+            }
+            size_t win = end;
+            for (size_t i = first; i < end; ++i)
+            {
+                if (top > all[i].resist * kResistOverRarity)
+                {
+                    continue;   // beaten by over 50 % of resistance: whatever its rarity
+                }
+                const Piece& c = all[i];
+                if (win == end || (c.grade != all[win].grade     ? c.grade > all[win].grade
+                                   : c.resist != all[win].resist ? c.resist > all[win].resist
+                                                                 : c.score > all[win].score))
+                {
+                    win = i;
+                }
             }
             for (size_t i = first; i < end; ++i)
             {
@@ -4636,7 +4640,7 @@ namespace
                         keep.insert(id);
                     }
                 }
-                else if (gemsFree && socketable(id) && ++gems > kGemsKept)
+                else if (gemsFree && bodySlotOf(id) < 0 && socketable(id) && ++gems > kGemsKept)
                 {
                     keep.insert(id);
                 }
@@ -4645,7 +4649,8 @@ namespace
             {
                 eachItem(store, [&](uint32_t id, int, int, int) {
                     const uint32_t type = typeOf(id);
-                    if (!(flagsOf(id) & kQuestItem) && (healingType(type) || extraKind(type) >= 0 || socketable(id)))
+                    if (!(flagsOf(id) & kQuestItem) &&
+                        (healingType(type) || extraKind(type) >= 0 || (bodySlotOf(id) < 0 && socketable(id))))
                     {
                         keep.insert(id);
                     }
@@ -4770,10 +4775,19 @@ namespace
             if (store)
             {
                 int gems = 0;
-                eachItem(pack, [&](uint32_t id, int, int, int) { gems += socketable(id) ? 1 : 0; });
+                eachItem(pack, [&](uint32_t id, int, int, int) { gems += bodySlotOf(id) < 0 && socketable(id) ? 1 : 0; });
                 const bool fewHealing = countHealing(pack) < wantHealing(), fewGems = gems < kGemsKept && !g_socketBase.load();
+                int extra[std::size(kExtraPotions)] = {};
+                eachItem(pack, [&](uint32_t id, int, int, int) {
+                    if (const int k = extraKind(typeOf(id)); k >= 0)
+                    {
+                        ++extra[k];
+                    }
+                });
                 eachItem(store, [&](uint32_t id, int, int, int) {
-                    take = take || (fewHealing && healingType(typeOf(id))) || (fewGems && socketable(id));
+                    const int k = extraKind(typeOf(id));
+                    take = take || (fewHealing && healingType(typeOf(id))) ||
+                           (fewGems && bodySlotOf(id) < 0 && socketable(id)) || (k >= 0 && extra[k] < kExtraPotions[k].want);
                 });
             }
             // The beaten ones in the storage: a visit to take them out only with the merchant next (the town stop's,
@@ -4937,16 +4951,26 @@ namespace
                     return true;
                 }
             }
-            // A healing potion back when the backpack holds fewer than wanted, a gem when fewer than the smith's 4.
+            // A healing potion back when the backpack holds fewer than wanted, another potion under the guide's stock, a
+            // gem when fewer than the smith's 4.
             if (uint8_t* box = entryOf(kStoreEntry))
             {
                 int gems = 0;
-                eachItem(pack, [&](uint32_t id, int, int, int) { gems += socketable(id) ? 1 : 0; });
+                eachItem(pack, [&](uint32_t id, int, int, int) { gems += bodySlotOf(id) < 0 && socketable(id) ? 1 : 0; });
                 const bool fewHealing = countHealing(pack) < wantHealing(), fewGems = gems < kGemsKept && !g_socketBase.load();
+                int extra[std::size(kExtraPotions)] = {};
+                eachItem(pack, [&](uint32_t id, int, int, int) {
+                    if (const int k = extraKind(typeOf(id)); k >= 0)
+                    {
+                        ++extra[k];
+                    }
+                });
                 uint32_t back = 0;
                 eachItem(box, [&](uint32_t id, int, int, int) {
+                    const int k = extraKind(typeOf(id));
                     if (!back && !g_visitIn.count(id) && !g_visitOut.count(id) &&
-                        ((fewHealing && healingType(typeOf(id))) || (fewGems && socketable(id))))
+                        ((fewHealing && healingType(typeOf(id))) || (fewGems && bodySlotOf(id) < 0 && socketable(id)) ||
+                         (k >= 0 && extra[k] < kExtraPotions[k].want)))
                     {
                         back = id;
                     }
