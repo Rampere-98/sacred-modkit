@@ -4457,7 +4457,13 @@ namespace
                     if (const auto v = std::find(s_visited.begin(), s_visited.end(), q.number); v != s_visited.end())
                     {
                         const auto [when, fresh] = s_visitedWhen.try_emplace(q.number, heroLv, g_questsDone);
-                        if (!fresh && heroLv > 0 && (heroLv > when->second.first || g_questsDone > when->second.second))
+                        // A DQ_ giver may not be there when its quest is not active (QIS_OnSetUp<n>, Manolito's block
+                        // BR): gone to again after 30 min too, not left for good.
+                        static std::unordered_map<int32_t, DWORD> s_visitedTick;
+                        const auto [tick, freshTick] = s_visitedTick.try_emplace(q.number, now);
+                        const bool dqAgain = q.number >= 10000 && !freshTick && now - tick->second > 1800000;
+                        if (!fresh && heroLv > 0 &&
+                            (heroLv > when->second.first || g_questsDone > when->second.second || dqAgain))
                         {
                             s_visited.erase(v);
                             g_giverTime.erase(q.number);
@@ -4465,6 +4471,7 @@ namespace
                                 "quest since (level {} -> {}, quests done {} -> {})",
                                 q.number, when->second.first, heroLv, when->second.second, g_questsDone);
                             s_visitedWhen.erase(when);
+                            s_visitedTick.erase(tick);
                         }
                     }
                 }
