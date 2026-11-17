@@ -7569,11 +7569,27 @@ namespace
                     g_farFails = g_farFailAt && now - g_farFailAt < 600000 ? g_farFails + 1 : 1;
                     g_farFailAt = now;
                 }
-                if (!g_questBook.empty())
+                // A jam within 30 tiles of the last one in 10 min is the place's, not the goal's: the goal followed is
+                // kept and the walk out and the stuck guard see to the place (the coordinator, 2026-11-17: A3 at
+                // 2972,2205 gave up 501, 203 and 402 in turn on the one spot, 25 s each, and would have skipped all three
+                // by the 3 give-ups rule). A jam somewhere new parks the goal as before (its way may be the fault).
+                static DWORD s_lastJamAt = 0;
+                static int32_t s_lastJamX = 0, s_lastJamY = 0;
+                const bool samePlace = s_lastJamAt && now - s_lastJamAt < 600000 &&
+                                       std::hypot(static_cast<double>(self->x - s_lastJamX),
+                                                  static_cast<double>(self->y - s_lastJamY)) < 30.0 * kTileSize;
+                s_lastJamAt = now;
+                s_lastJamX = self->x;
+                s_lastJamY = self->y;
+                if (!g_questBook.empty() && !samePlace)
                 {
                     const QuestGoal& g = g_questBook.front();
                     g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(g.x / kTileSize)) << 32) |
                                     static_cast<uint32_t>(g.y / kTileSize)] = now + 180000u * static_cast<DWORD>(s_step);
+                }
+                else if (samePlace)
+                {
+                    LOG("AutoAttack: the jam is the place's (another within 30 tiles lately): the goal kept, a walk out");
                 }
                 for (auto it = g_trail.rbegin(); it != g_trail.rend(); ++it)
                 {
