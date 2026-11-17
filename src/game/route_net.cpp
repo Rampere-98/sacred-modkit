@@ -1,5 +1,6 @@
 #include "game/route_net.h"
 #include "game/map_memory.h"
+#include "game/teleports.h"
 #include "log.h"
 
 #include <windows.h>
@@ -27,12 +28,22 @@ namespace
     struct Way
     {
         int to, cost;               // cost in tenths of a tile, as the script worked it out
-        int points;                 // index into g_points
+        int points;                 // index into g_points (-1 for a door: no walk, the game's jump)
         bool reversed;              // its points walked from the end
+        int door = -1;              // index into g_doors: a door from this node's landing to `to`'s
+    };
+    // A door of the net ("P from to cost name box"): one way, from a landing to the other's.
+    struct Door
+    {
+        int from = -1, to = -1;
+        std::string name;           // DefPos' suffix ("17.2")
+        bool box = false;           // the interior's walkable part (by the world files): x0..x1, y0..y1
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     };
     std::vector<Node> g_nodes;
     std::vector<std::vector<Way>> g_ways;
     std::vector<std::vector<std::pair<int, int>>> g_points;
+    std::vector<Door> g_doors;
     bool g_loaded = false;          // under g_lock, as all here
 
     std::mutex g_lock;
@@ -47,6 +58,10 @@ namespace
         std::vector<std::pair<int, int>> points;  // the hero's start .. the goal
         size_t progress = 0;                      // the point nearest the hero last asked
         int tiles = 0;                            // the walk's length by the net
+        // The doors on the trip: at points[doorAt[i]] the hero steps through door g_doors[doorOf[i]] and lands at
+        // points[doorAt[i] + 1] (no walk between those two).
+        std::vector<size_t> doorAt;
+        std::vector<int> doorOf;
     };
     Kept g_kept;
     bool g_busy = false;
@@ -150,10 +165,34 @@ namespace
                 g_ways[b].push_back({static_cast<int>(a), static_cast<int>(cost), idx, true});
                 ++ways;
             }
+            else if (p[0] == 'P')
+            {
+                // A door: "P from to cost name x0,y0,x1,y1" (or "-" for no box), one way.
+                int a = -1, b = -1, cost = 0, used = 0;
+                char name[64] = {}, box[64] = {};
+                if (std::sscanf(p, "P %d %d %d %63s %n", &a, &b, &cost, name, &used) < 4 || a < 0 || b < 0 ||
+                    a >= static_cast<int>(g_nodes.size()) || b >= static_cast<int>(g_nodes.size()) || cost <= 0 || a == b)
+                {
+                    continue;
+                }
+                Door d;
+                d.from = a;
+                d.to = b;
+                d.name = name;
+                if (std::sscanf(p + used, "%63s", box) == 1 &&
+                    std::sscanf(box, "%d,%d,%d,%d", &d.x0, &d.y0, &d.x1, &d.y1) == 4)
+                {
+                    d.box = true;
+                }
+                g_ways.resize(g_nodes.size());
+                g_ways[a].push_back({b, cost, -1, false, static_cast<int>(g_doors.size())});
+                g_doors.push_back(std::move(d));
+            }
         }
         std::fclose(f);
         g_ways.resize(g_nodes.size());
-        LOG("RouteNet: net of {} nodes and {} ways read in {} ms", g_nodes.size(), ways, GetTickCount() - t0);
+        LOG("RouteNet: net of {} nodes, {} ways and {} doors read in {} ms", g_nodes.size(), ways, g_doors.size(),
+            GetTickCount() - t0);
     }
 
     // The walk's length in tenths of a tile along route tiles.
@@ -374,6 +413,23 @@ namespace
             if (i + 1 < chain.size())
             {
                 const Way& w = g_ways[chain[i]][prevWay[chain[i + 1]]];
+                if (w.door >= 0)
+                {
+                    // Through a door: its landing here (the trip's last point so far: every way ends on its node),
+                    // then the other landing, where the hero comes out.
+                    if (k.points.empty() || k.points.back() != std::pair{nd.x, nd.y})
+                    {
+                        k.points.push_back({nd.x, nd.y});
+                    }
+                    k.doorAt.push_back(k.points.size() - 1);
+                    k.doorOf.push_back(w.door);
+                    k.points.push_back({g_nodes[w.to].x, g_nodes[w.to].y});
+                    if (names.size() < 200)
+                    {
+                        names += (names.empty() ? "door " : " > door ") + g_doors[w.door].name;
+                    }
+                    continue;
+                }
                 const auto& pts = g_points[w.points];
                 if (w.reversed)
                 {
@@ -445,6 +501,12 @@ float RouteNet::tilesLeft(int layer, int heroX, int heroY, int toX, int toY)
     double left = 0.0;
     for (size_t i = nearest + 1; i < k.points.size(); ++i)
     {
+        // Through a door, no tiles: the game's jump from one landing to the other, thousands of tiles apart.
+        if (std::find(k.doorAt.begin(), k.doorAt.end(), i - 1) != k.doorAt.end())
+        {
+            left += 2.0;
+            continue;
+        }
         left += std::hypot(static_cast<double>(k.points[i].first - k.points[i - 1].first),
                            static_cast<double>(k.points[i].second - k.points[i - 1].second));
     }
@@ -489,8 +551,25 @@ RouteNet::Trip RouteNet::trip(int layer, int fromX, int fromY, int toX, int toY,
             }
             if (nearestD <= kOffTrip)
             {
+                // A door passed since last asked: the hero came out at its other landing.
+                size_t end = k.points.size();
+                for (size_t i = 0; i < k.doorAt.size(); ++i)
+                {
+                    if (k.doorAt[i] >= k.progress && k.doorAt[i] < nearest)
+                    {
+                        LOG("RouteNet: through door {} on the trip to {},{}: out at {},{} (the hero at {},{})",
+                            g_doors[k.doorOf[i]].name, toX, toY, k.points[k.doorAt[i] + 1].first,
+                            k.points[k.doorAt[i] + 1].second, fromX, fromY);
+                    }
+                    // The walk goes as far as the next door's landing; the step through is doorAhead's.
+                    if (k.doorAt[i] >= nearest && end == k.points.size())
+                    {
+                        end = k.doorAt[i] + 1;
+                    }
+                }
                 k.progress = nearest;
-                out.assign(k.points.begin() + static_cast<std::ptrdiff_t>(nearest), k.points.end());
+                out.assign(k.points.begin() + static_cast<std::ptrdiff_t>(nearest),
+                           k.points.begin() + static_cast<std::ptrdiff_t>(end));
                 out.insert(out.begin(), {fromX, fromY});
                 return Trip::Ready;
             }
@@ -586,4 +665,73 @@ float RouteNet::walkTiles(int fromX, int fromY, int toX, int toY)
         }).detach();
     }
     return -1.0f;
+}
+
+bool RouteNet::doorAhead(int layer, int heroX, int heroY, int toX, int toY, int& landX, int& landY, const char*& name)
+{
+    const std::lock_guard lock(g_lock);
+    const Kept& k = g_kept;
+    if (!k.ok || k.layer != layer || cheb(k.toX, k.toY, toX, toY) > 4)
+    {
+        return false;
+    }
+    for (size_t i = 0; i < k.doorAt.size(); ++i)
+    {
+        if (k.doorAt[i] < k.progress)
+        {
+            continue;
+        }
+        const auto& [x, y] = k.points[k.doorAt[i]];
+        if (cheb(x, y, heroX, heroY) > 10)
+        {
+            return false;   // the next door is still ahead, walked to first
+        }
+        landX = x;
+        landY = y;
+        name = g_doors[k.doorOf[i]].name.c_str();   // g_doors is only written by load()
+        return true;
+    }
+    return false;
+}
+
+bool RouteNet::insideOf(int landX, int landY, int x, int y)
+{
+    const std::lock_guard lock(g_lock);
+    if (!g_loaded)
+    {
+        load();
+    }
+    for (const Door& d : g_doors)
+    {
+        const Node& to = g_nodes[d.to];
+        if (d.box && cheb(to.x, to.y, landX, landY) <= 6 && x >= d.x0 && x <= d.x1 && y >= d.y0 && y <= d.y1)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RouteNet::doorStep(int layer, int landX, int landY, int heroX, int heroY, int& stepX, int& stepY)
+{
+    stepX = landX;
+    stepY = landY;
+    // A cave's way in or out is the script's zone a few tiles off its landing (Manolito, block BE).
+    if (int cx = 0, cy = 0; Teleports::caveTriggerNear(landX, landY, 8, cx, cy))
+    {
+        stepX = cx;
+        stepY = cy;
+        return;
+    }
+    // A house's or cellar's: the stairs anchor by the landing, the one on the hero's side.
+    double best = 1e18;
+    for (const auto& [ax, ay] : Teleports::anchorsNear(layer, landX, landY, 6))
+    {
+        if (const double d = std::hypot(ax - heroX, ay - heroY); d < best)
+        {
+            best = d;
+            stepX = ax;
+            stepY = ay;
+        }
+    }
 }

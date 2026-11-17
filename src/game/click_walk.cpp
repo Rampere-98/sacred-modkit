@@ -338,6 +338,51 @@ namespace
                         start.x, start.y, stop.x, stop.y);
                 }
             }
+            // A door next on the net's trip (A5, 2026-11-17: quest 701's goal inside cave 17.2, an interior placed far
+            // off on the map, its door at 3176,1930): to the tile that steps through it, the game's own jump (no
+            // teleport of ours); on it with nothing yet for 4 s, a step off, and the next plan steps on again.
+            bool throughDoor = false;
+            if (byNet == RouteNet::Trip::Ready)
+            {
+                int landX = 0, landY = 0;
+                const char* door = "";
+                if (RouteNet::doorAhead(g_grid.layer, start.x, start.y, goal.x, goal.y, landX, landY, door))
+                {
+                    int stepX = landX, stepY = landY;
+                    RouteNet::doorStep(g_grid.layer, landX, landY, start.x, start.y, stepX, stepY);
+                    static int s_toldX = -1, s_toldY = -1;
+                    static DWORD s_onStepSince = 0;
+                    if (s_toldX != stepX || s_toldY != stepY)
+                    {
+                        s_toldX = stepX;
+                        s_toldY = stepY;
+                        LOG("Click walk: far goal {},{} by the route net through door {}: to its step at {},{} (landing {},{})",
+                            goal.x, goal.y, door, stepX, stepY, landX, landY);
+                    }
+                    if (stepX == start.x && stepY == start.y)
+                    {
+                        const DWORD now = GetTickCount();
+                        if (!s_onStepSince)
+                        {
+                            s_onStepSince = now;
+                        }
+                        if (now - s_onStepSince < 4000)
+                        {
+                            return false;   // on the door: the game's jump comes
+                        }
+                        s_onStepSince = 0;
+                        LOG("Click walk: on door {}'s step at {},{} for 4 s and still here: a step off to step on again",
+                            door, stepX, stepY);
+                        stop = {start.x + 2, start.y};
+                    }
+                    else
+                    {
+                        s_onStepSince = 0;
+                        stop = {stepX, stepY};
+                    }
+                    throughDoor = true;
+                }
+            }
             else
             {
                 const double dx = goal.x - start.x, dy = goal.y - start.y;
@@ -345,7 +390,7 @@ namespace
                 const double scale = std::min(1.0, reach / std::max(std::abs(dx), std::abs(dy)));
                 stop = {start.x + static_cast<int>(dx * scale), start.y + static_cast<int>(dy * scale)};
             }
-            if (chebyshev(stop, start.x, start.y) < 4)
+            if (chebyshev(stop, start.x, start.y) < (throughDoor ? 1 : 4))
             {
                 return false;
             }
