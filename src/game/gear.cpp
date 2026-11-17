@@ -910,6 +910,7 @@ namespace
         return false;
     }
 
+    int wantHealing();
     bool sellOne(cCreature* hero, uint8_t* pack)
     {
         void* inv = inventory();
@@ -991,7 +992,7 @@ namespace
                 // Potions, runes, gems...; or an upgrade (perhaps once the hero is stronger). Rich: the healing potions
                 // beyond twice the stock go.
                 const bool potion = healingType(typeOf(id));
-                const bool surplusPotion = rich && !fits && potion && ++g_sellPotions > 2 * Mind::now().potionStock;
+                const bool surplusPotion = rich && !fits && potion && ++g_sellPotions > std::max(2 * Mind::now().potionStock, wantHealing());   // never the ones bought (A7, 2026-11-17: bought at 17 of 20, sold over 16)
                 if (!surplusPotion)
                 {
                     ++g_sellWhy[fits ? 4 : potion ? 5 : 6];
