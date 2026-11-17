@@ -7891,6 +7891,26 @@ namespace
                 {
                     d = wayLength(self->x, self->y, m.x, m.y);    // the walk, not the straight line
                 }
+                // One the route net cannot reach (the stuck solver, 2026-11-17, A2 and A8: merchant 1cf at 3242,2864, the
+                // multiplayer start's enclave, 620 and 217 tiles off, «the net has no way between the nodes near either end»
+                // at each try: the hero walked its crude straight orders 150 s, «no nearer», left it 30 min, and went on to
+                // the next one beyond the same gap, an hour in all with the potions at 0): left 30 min at once.
+                if (layer == 0 && m.layer == 0 && d <= shopReach)
+                {
+                    const int ftx = static_cast<int>(self->x / kTileSize), fty = static_cast<int>(self->y / kTileSize);
+                    const int mtx = static_cast<int>(m.x / kTileSize), mty = static_cast<int>(m.y / kTileSize);
+                    if (std::max(std::abs(ftx - mtx), std::abs(fty - mty)) > 100)
+                    {
+                        RouteNet::walkTiles(ftx, fty, mtx, mty);    // asked (worked out on a low thread); the answer next pass
+                        if (RouteNet::knownNoWay(ftx, fty, mtx, mty))
+                        {
+                            g_shopUselessAt[m.id] = now;
+                            LOG("AutoAttack: merchant {:x} at {},{} ({:.0f} tiles): the route net has no way to it: left 30 min",
+                                m.id, mtx, mty, d / kTileSize);
+                            continue;
+                        }
+                    }
+                }
                 // One in a house (its floor another layer) only near: a click on him sends the hero there by the game's
                 // own path finder, which opens the doors on the way (the player: «algunos comerciantes se encuentran
                 // dentro de casas»).
@@ -8024,6 +8044,17 @@ namespace
                     }
                     const double way = wayLength(self->x, self->y, static_cast<int32_t>((mx + 0.5) * kTileSize),
                                                  static_cast<int32_t>((my + 0.5) * kTileSize));
+                    if (layer == 0 && std::max(std::abs(remTx - mx), std::abs(remTy - my)) > 100)
+                    {
+                        RouteNet::walkTiles(remTx, remTy, mx, my);
+                        if (RouteNet::knownNoWay(remTx, remTy, mx, my))
+                        {
+                            s_remFailedAt[key] = now;
+                            LOG("AutoAttack: the remembered merchant {},{} ({:.0f} tiles): the route net has no way to it: left 30 min",
+                                mx, my, way / kTileSize);
+                            continue;
+                        }
+                    }
                     const double rank = key == s_remKey ? way * 0.75 : way;
                     if (way <= 900.0 * kTileSize && (!remFound || rank < remRank) &&
                         !deadlyWay(static_cast<int32_t>((mx + 0.5) * kTileSize), static_cast<int32_t>((my + 0.5) * kTileSize), way))

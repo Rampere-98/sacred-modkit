@@ -21,6 +21,10 @@ namespace RouteNet
     // choosing between walking and a portal: -1 while it is worked out (on the same low thread; ask again), -2 with no
     // net or no way by it. Kept five minutes for ends within 4 tiles (the goal) and 12 (the start).
     float walkTiles(int fromX, int fromY, int toX, int toY);
+    // True when walkTiles' answer for those ends (asked before; the same ends as there) is that the net holds nodes near both
+    // and no way between them: a place the walkers' map does not join (an enclave, the far bank of a river). False for
+    // «not worked out yet», for no net, and for a start or an end with no node near it.
+    bool knownNoWay(int fromX, int fromY, int toX, int toY);
     // The tiles still to walk of the trip being walked to (toX, toY) on `layer`, from the point of the trip nearest the
     // hero at (heroX, heroY) (within the 24 points ahead of the one last asked for; the trip is the net's, not the
     // hero's every step): -1 when the net has no trip for that goal or the hero is over 40 tiles off it. The auto attack's measure of progress along

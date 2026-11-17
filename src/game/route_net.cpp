@@ -43,6 +43,7 @@ namespace
         int layer = -1, toX = 0, toY = 0, fromX = 0, fromY = 0;
         DWORD at = 0;
         bool ok = false;
+        bool noWay = false;                       // the net holds nodes near both ends and no way between them
         std::vector<std::pair<int, int>> points;  // the hero's start .. the goal
         size_t progress = 0;                      // the point nearest the hero last asked
         int tiles = 0;                            // the walk's length by the net
@@ -352,6 +353,7 @@ namespace
             LOG("RouteNet: trip {},{} to {},{} on layer {}: the net has no way between the nodes near either end, {} ms",
                 fromX, fromY, toX, toY, layer, GetTickCount() - t0);
             k.at = GetTickCount();
+            k.noWay = true;
             return k;
         }
         std::vector<int> chain{bestNode};
@@ -516,6 +518,27 @@ RouteNet::Trip RouteNet::trip(int layer, int fromX, int fromY, int toX, int toY,
         }).detach();
     }
     return Trip::Working;
+}
+
+bool RouteNet::knownNoWay(int fromX, int fromY, int toX, int toY)
+{
+    const std::lock_guard lock(g_lock);
+    if (!g_loaded || g_nodes.empty())
+    {
+        return false;
+    }
+    const DWORD now = GetTickCount();
+    const auto same = [&](const Kept& k) {
+        return k.layer == 0 && std::abs(k.toX - toX) <= 4 && std::abs(k.toY - toY) <= 4 && cheb(k.fromX, k.fromY, fromX, fromY) <= 12;
+    };
+    for (const Kept& k : g_lengths)
+    {
+        if (same(k) && now - k.at < 600000)
+        {
+            return k.noWay;
+        }
+    }
+    return g_kept.noWay && same(g_kept) && now - g_kept.at < 600000;
 }
 
 float RouteNet::walkTiles(int fromX, int fromY, int toX, int toY)
