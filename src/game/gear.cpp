@@ -290,10 +290,11 @@ namespace
         float value = 0.0f;     // the game's value: the tie-breaker
         int set = -1;           // the set it belongs to (index in the game's set table), -1 none
         bool weapon = false;
-        int grade = -1;         // rarity: 0 white, 1 blue, 2 yellow, 3 gold, 4 set (gradeOf), -1 unknown
+        int grade = -1;         // rarity level: 0..15 (white 0-4, blue 5-11, yellow 12-14, unique 15), 16 set, -1 unknown
         uint32_t id = 0;
     };
     int gradeOf(uint32_t id, bool equipment);
+    int rarityLevel(uint32_t id);
 
     // The game's sets (bin\sets.bin, loaded to typeMgr +0x563244 .. +0x563248): records of 0x70 bytes, the pieces'
     // info ids (the item's info +0x00) at +0x00..+0x24, 0 ending. Seen live: 0x54E in set 6, Lilith's wings in set 7.
@@ -485,9 +486,33 @@ namespace
             }
         }
         w.value = static_cast<float>(fn<GetValue>(g_getValue)(item, nullptr));
-        w.grade = gradeOf(id, true);
+        w.grade = rarityLevel(id);
         w.id = id;
         return w;
+    }
+
+    // The rarity's own level (Manolito, block BT, 2026-11-17): u32 object+0x11C bits 16-19, 0..0xF, only on a generated
+    // object (its top byte 0x91 or 0xA1: & 0x30000000; a template, 0x80, counts white); a set piece (its weapon record
+    // 0x434030(type) +0x23 not 0, or its info id in the sets' table) above all: 16. Higher rarer: set >= unique (0xF) >
+    // yellow (0xC-0xE) > blue (5-0xB) > white (0-4), and within a group the higher level.
+    int rarityLevel(uint32_t id)
+    {
+        cObjectManager* objects = cObjectManager::instance();
+        const auto* o = reinterpret_cast<const uint8_t*>(objects ? objects->object(id) : nullptr);
+        if (!o)
+        {
+            return -1;
+        }
+        void* types = *reinterpret_cast<void* const*>(0xAAB5E4);
+        using WeaponRecord = const uint8_t*(__fastcall*)(void* types, void*, uint32_t type);
+        const uint32_t type = *reinterpret_cast<const uint32_t*>(o + kItemType);
+        const uint8_t* record = types && type ? reinterpret_cast<WeaponRecord>(0x434030)(types, nullptr, type) : nullptr;
+        if ((record && record[0x23]) || setOf(*reinterpret_cast<const uint32_t*>(o + 0x118)) >= 0)
+        {
+            return 16;
+        }
+        const uint32_t f = *reinterpret_cast<const uint32_t*>(o + 0x11C);
+        return f & 0x30000000u ? static_cast<int>((f >> 16) & 0xF) : 0;
     }
 
     int gradeOf(uint32_t id, bool equipment)
@@ -522,7 +547,10 @@ namespace
     // The rarer always first (the owner, 2026-11-17 17:12: «el agente tiene que dar preferencia siempre a los objetos
     // con mayor rareza»): between two pieces for the same place, the higher grade wins, the score only at the same
     // grade (a set piece's, with its set bonus, as ever). +1 a rarer, -1 b rarer, 0 the same or not known.
-    const char* const kGradeName[5] = {"white", "blue", "yellow", "gold", "set"};
+    const char* gradeName(int level)
+    {
+        return level >= 16 ? "set" : level == 15 ? "unique" : level >= 12 ? "yellow" : level >= 5 ? "blue" : "white";
+    }
     int rarerOf(const Worth& a, const Worth& b)
     {
         if (a.grade < 0 || b.grade < 0 || a.grade == b.grade)
@@ -534,7 +562,7 @@ namespace
     // A score with the grade first, for picking the best of many (the grade's step above any score)
     float rarityScore(const Worth& w)
     {
-        return w.score + (w.grade > 0 ? static_cast<float>(w.grade) * 100000.0f : 0.0f);
+        return w.score + (w.grade > 0 ? static_cast<float>(w.grade) * 10000.0f : 0.0f);
     }
     // a over b for one place: the rarer, else the score over the margin
     bool beats(uint32_t a, uint32_t b, float margin)
@@ -549,13 +577,13 @@ namespace
     void tellRarity(const Worth& winner, const Worth& loser, const char* where)
     {
         static std::unordered_set<uint64_t> s_told;
-        if (winner.grade < 0 || loser.grade < 0 || winner.grade <= loser.grade || winner.grade > 4 || loser.grade > 4 ||
+        if (winner.grade < 0 || loser.grade < 0 || winner.grade <= loser.grade ||
             !s_told.insert((static_cast<uint64_t>(winner.id) << 32) | loser.id).second)
         {
             return;
         }
-        LOG("Gear: {}: {:x} over {:x} (rarity {} over {}; score {:.0f} against {:.0f})", where, winner.id, loser.id,
-            kGradeName[winner.grade], kGradeName[loser.grade], winner.score, loser.score);
+        LOG("Gear: {}: {:x} over {:x} (rarity {} {} over {} {}; score {:.0f} against {:.0f})", where, winner.id, loser.id,
+            gradeName(winner.grade), winner.grade, gradeName(loser.grade), loser.grade, winner.score, loser.score);
     }
 
     // Pieces of each set the hero wears (by set index).
@@ -1335,7 +1363,8 @@ namespace
                 ++g_sellWhy[12];
                 return;     // kept for the storage chest: a zone's resistance
             }
-            if (std::max(0, gradeOf(id, true)) > pass)
+            const int level = rarityLevel(id);
+            if ((level >= 16 ? 4 : level == 15 ? 3 : level >= 12 ? 2 : level >= 5 ? 1 : 0) > pass)
             {
                 return;     // rarer than this pass's: in a later one
             }
@@ -2878,7 +2907,7 @@ namespace
             {
                 continue;
             }
-            targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), rarityScore(worth(w)) * 1.05f});
+            targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), rarityScore(worth(w)) + worth(w).score * 0.05f});
         }
         if (targets.empty())
         {
@@ -4797,21 +4826,63 @@ namespace
                     return true;
                 }
             }
-            // Sorted once a visit with the game's own sort of a grid (the inventory's arrow, 0x5DB6B0, on the storage's
-            // entry): no loose gaps keeping a big piece out (the owner, 2026-11-17: «tienen que saber organizar el
-            // almacén»).
-            static uint32_t s_sortedVisit = 0;
-            if (store && s_sortedVisit != used && Act::allowed(Act::Kind::SortInventory, "sort the storage after the visit"))
+            // Put in order as a player does it (the owner, 2026-11-17: «tienen que saber organizar el almacén»; the chest
+            // has no sort button, Manolito block BJ: autoSortItems 0x5DB6B0 is the backpack's and the shop's only):
+            // pick a piece up and drop it at the first free place by columns from the top left, when that is before
+            // its own, until a 2x4 piece fits; 12 moves a visit at most, one a pass.
+            static DWORD s_movesVisit = 0;
+            static int s_moves = 0;
+            if (s_movesVisit != g_storageVisitAt)
             {
-                s_sortedVisit = used;
-                uint16_t cell = 0;
-                const bool before = fn<FindFree>(g_findFree)(store, nullptr, 2, 4, &cell, 0) != 0;
-                using AutoSort = void(__fastcall*)(uint8_t* entry, void*, uint16_t mode);
-                reinterpret_cast<AutoSort>(0x5DB6B0)(store, nullptr, 0);
-                const bool after = fn<FindFree>(g_findFree)(store, nullptr, 2, 4, &cell, 0) != 0;
-                LOG("Gear: storage sorted (the game's grid sort): a 2x4 piece fits {} -> {}", before ? "yes" : "no",
-                    after ? "yes" : "no");
-                return true;
+                s_movesVisit = g_storageVisitAt;
+                s_moves = 0;
+            }
+            uint16_t room = 0;
+            if (store && s_moves < 12 && !fn<FindFree>(g_findFree)(store, nullptr, 2, 4, &room, 0) &&
+                Act::allowed(Act::Kind::Storage, "put the storage in order (pick up and drop)"))
+            {
+                const int gw = *reinterpret_cast<uint16_t*>(store + 0x115C), gh = *reinterpret_cast<uint16_t*>(store + 0x115E);
+                const auto order = [&](int cell) { return gw > 0 ? (cell % gw) * gh + cell / gw : cell; };   // by columns
+                // The last pieces by columns first: the gaps go to the end
+                struct Piece
+                {
+                    uint32_t id;
+                    int cell, w, h;
+                };
+                std::vector<Piece> pieces;
+                eachItem(store, [&](uint32_t id, int cell, int w, int h) { pieces.push_back({id, cell, w, h}); });
+                std::sort(pieces.begin(), pieces.end(),
+                          [&](const Piece& a, const Piece& b) { return order(a.cell) > order(b.cell); });
+                bool moved = false;
+                for (size_t tries = 0; !moved && tries < pieces.size() && tries < 8; ++tries)
+                {
+                    const uint32_t pick = pieces[tries].id;
+                    const int pickCell = pieces[tries].cell, pw = pieces[tries].w, ph = pieces[tries].h;
+                    fn<RemoveItem>(g_removeItem)(store, nullptr, pick, 1);
+                    uint16_t to = 0;
+                    if (fn<FindFree>(g_findFree)(store, nullptr, pw, ph, &to, 0) && order(to) < order(pickCell))
+                    {
+                        moved = fn<PutItem>(g_putItem)(store, nullptr, to, pick, pw, ph, 1) != 0;
+                    }
+                    if (!moved)
+                    {
+                        fn<PutItem>(g_putItem)(store, nullptr, pickCell, pick, pw, ph, 1);   // back where it was
+                        continue;
+                    }
+                    else
+                    {
+                        LOG("Gear: storage in order: {:x} ({}x{}) moved from square {} to {}", pick, pw, ph, pickCell, to);
+                    }
+                }
+                ++s_moves;
+                if (!moved)
+                {
+                    s_moves = 12;   // none of the last 8 has an earlier place: no more by this way this visit
+                }
+                if (moved)
+                {
+                    return true;
+                }
             }
             // What is in it and why (the owner, 2026-11-17: «mide qué hay guardado»): by body slot and purpose.
             size_t inStore = 0;
