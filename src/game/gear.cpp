@@ -5987,6 +5987,11 @@ int Gear::healingLeft()
     return g_healing;
 }
 
+int Gear::healingWanted()
+{
+    return wantHealing();
+}
+
 void Gear::setHirelings(int count)
 {
     g_hirelingsNow = count;

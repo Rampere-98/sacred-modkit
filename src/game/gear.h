@@ -51,6 +51,8 @@ namespace Gear
 
     // Healing potions in the backpack at the last look (-1 not counted yet).
     int healingLeft();
+    // How many healing potions the hero wants in stock (the class's mind, plus the hirelings', up to 20 with gold to spare).
+    int healingWanted();
     // The hirelings following the hero now (AutoAttack tells at each look): their potions are kept too.
     void setHirelings(int count);
     // The backpack has no room left (whatever the trips setting): the agent leaves items lying.
