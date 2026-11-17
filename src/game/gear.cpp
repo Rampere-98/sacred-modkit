@@ -291,8 +291,10 @@ namespace
         int set = -1;           // the set it belongs to (index in the game's set table), -1 none
         bool weapon = false;
         int grade = -1;         // rarity level: 0..15 (white 0-4, blue 5-11, yellow 12-14, unique 15), 16 set, -1 unknown
+        bool exclusive = false; // only the hero's class may wear it (ownClassOnly)
         uint32_t id = 0;
     };
+    bool ownClassOnly(cCreature* hero, uint32_t id);
     int gradeOf(uint32_t id, bool equipment);
     int rarityLevel(uint32_t id);
 
@@ -487,6 +489,10 @@ namespace
         }
         w.value = static_cast<float>(fn<GetValue>(g_getValue)(item, nullptr));
         w.grade = rarityLevel(id);
+        if (cCreature* hero = objects->hero())
+        {
+            w.exclusive = ownClassOnly(hero, id);
+        }
         w.id = id;
         return w;
     }
@@ -551,8 +557,14 @@ namespace
     {
         return level >= 16 ? "set" : level == 15 ? "unique" : level >= 12 ? "yellow" : level >= 5 ? "blue" : "white";
     }
+    // The hero's class's own before all (the owner, 2026-11-17 18:05: «la preferencia es para los objetos exclusivos,
+    // después la rareza»), then the rarer.
     int rarerOf(const Worth& a, const Worth& b)
     {
+        if (a.exclusive != b.exclusive)
+        {
+            return a.exclusive ? 1 : -1;
+        }
         if (a.grade < 0 || b.grade < 0 || a.grade == b.grade)
         {
             return 0;
@@ -562,7 +574,7 @@ namespace
     // A score with the grade first, for picking the best of many (the grade's step above any score)
     float rarityScore(const Worth& w)
     {
-        return w.score + (w.grade > 0 ? static_cast<float>(w.grade) * 10000.0f : 0.0f);
+        return w.score + (w.grade > 0 ? static_cast<float>(w.grade) * 10000.0f : 0.0f) + (w.exclusive ? 1e6f : 0.0f);
     }
     // a over b for one place: the rarer, else the score over the margin
     bool beats(uint32_t a, uint32_t b, float margin)
@@ -577,9 +589,16 @@ namespace
     void tellRarity(const Worth& winner, const Worth& loser, const char* where)
     {
         static std::unordered_set<uint64_t> s_told;
-        if (winner.grade < 0 || loser.grade < 0 || winner.grade <= loser.grade ||
+        const bool exclusive = winner.exclusive && !loser.exclusive;
+        if ((!exclusive && (winner.grade < 0 || loser.grade < 0 || winner.grade <= loser.grade)) ||
             !s_told.insert((static_cast<uint64_t>(winner.id) << 32) | loser.id).second)
         {
+            return;
+        }
+        if (exclusive)
+        {
+            LOG("Gear: {}: {:x} over {:x} (exclusive over {} {}; score {:.0f} against {:.0f})", where, winner.id, loser.id,
+                gradeName(loser.grade), loser.grade, winner.score, loser.score);
             return;
         }
         LOG("Gear: {}: {:x} over {:x} (rarity {} {} over {} {}; score {:.0f} against {:.0f})", where, winner.id, loser.id,
@@ -620,7 +639,10 @@ namespace
     // pieces counting more with others of their set worn), over `margin` (a change for less only makes the gear
     // swing back and forth), the game's value breaking ties. A piece of a set the hero wears two or more of is kept
     // unless the candidate is of the same set.
-    bool better(const Worth& candidate, uint32_t current, float margin, const std::unordered_map<int, int>& worn)
+    // exclusiveFirst false: the hands of the slot in use, where the score rules over the class's own (the player,
+    // 2026-11-16 22:50); the rarity still first there.
+    bool better(const Worth& candidate, uint32_t current, float margin, const std::unordered_map<int, int>& worn,
+                bool exclusiveFirst = true)
     {
         if (!current)
         {
@@ -639,11 +661,16 @@ namespace
                 return false;
             }
         }
-        if (const int r = rarerOf(candidate, now))
+        Worth c = candidate, n = now;
+        if (!exclusiveFirst)
+        {
+            c.exclusive = n.exclusive = false;
+        }
+        if (const int r = rarerOf(c, n))
         {
             if (r > 0)
             {
-                tellRarity(candidate, now, "equipping");
+                tellRarity(c, n, "equipping");
             }
             return r > 0;
         }
@@ -799,7 +826,7 @@ namespace
                 continue;
             }
             const bool ownOverCommon = ownFirst && !handSlot && own && current && !currentOwn;
-            if (!ownOverCommon && !secondOverShield && !better(w, current, margin, worn))
+            if (!ownOverCommon && !secondOverShield && !better(w, current, margin, worn, !handSlot))
             {
                 continue;
             }
@@ -1022,7 +1049,9 @@ namespace
             {
                 return;
             }
-            const float score = worth(id).primary;
+            const Worth wf = worth(id);
+            const float score = wf.primary + (wf.grade > 0 ? static_cast<float>(wf.grade) * 10000.0f : 0.0f) +
+                                (wf.exclusive ? 1e6f : 0.0f);   // exclusive, then rarer, then the score
             auto [at, fresh] = best.try_emplace(slot, id, score);
             if (!fresh && score > at->second.second)
             {
@@ -1364,7 +1393,7 @@ namespace
                 return;     // kept for the storage chest: a zone's resistance
             }
             const int level = rarityLevel(id);
-            if ((level >= 16 ? 4 : level == 15 ? 3 : level >= 12 ? 2 : level >= 5 ? 1 : 0) > pass)
+            if ((worth(id).exclusive ? 5 : level >= 16 ? 4 : level == 15 ? 3 : level >= 12 ? 2 : level >= 5 ? 1 : 0) > pass)
             {
                 return;     // rarer than this pass's: in a later one
             }
@@ -1412,7 +1441,7 @@ namespace
             }
             ++g_sellWhy[11];
         };
-        for (pass = 0; pass <= 4 && !done; ++pass)
+        for (pass = 0; pass <= 5 && !done; ++pass)   // 5: the hero's class's own, the very last
         {
             std::fill(std::begin(g_sellWhy), std::end(g_sellWhy), 0);
             g_sellSeen = 0;
@@ -4463,6 +4492,7 @@ namespace
             float score;
             bool stored;
             int grade;
+            bool exclusive;
         };
         std::vector<Piece> all;
         // Judged everywhere (the owner, 2026-11-17 17:51; A3: «storage holds 34: kept 0, to take out 0, else 34»: it was
@@ -4522,7 +4552,7 @@ namespace
             }
             if (r[e] >= 5.0f)
             {
-                all.push_back({id, slot * 4 + e, r[e], worth(id).score, stored, worth(id).grade});
+                all.push_back({id, slot * 4 + e, r[e], worth(id).score, stored, worth(id).grade, worth(id).exclusive});
             }
         };
         g_storageOut.clear();
@@ -4554,9 +4584,10 @@ namespace
                     continue;   // beaten by over 50 % of resistance: whatever its rarity
                 }
                 const Piece& c = all[i];
-                if (win == end || (c.grade != all[win].grade     ? c.grade > all[win].grade
-                                   : c.resist != all[win].resist ? c.resist > all[win].resist
-                                                                 : c.score > all[win].score))
+                if (win == end || (c.exclusive != all[win].exclusive ? c.exclusive
+                                   : c.grade != all[win].grade         ? c.grade > all[win].grade
+                                   : c.resist != all[win].resist       ? c.resist > all[win].resist
+                                                                       : c.score > all[win].score))
                 {
                     win = i;
                 }
