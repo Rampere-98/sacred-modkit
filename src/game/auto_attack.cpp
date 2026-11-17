@@ -8639,11 +8639,36 @@ namespace
             // Outmatched lately (two hopeless fights in 10 min): every quest but one at hand waits while the hero farms
             // where it can win (A3 2026-11-12: a quest of a 1-4 region still taken, its way by an archers' camp,
             // 4 deaths in 20 min there).
+            // For 20 min at most at a time (the stuck solver, 2026-11-17, A1, a Seraphim of level 27: 117 «hopeless fights» in 2 h,
+            // 110 of them under 90 % of its health in packs of 4-9, the farming that the hold sends it to being where they
+            // are, so two in any 10 min for good; the five givers of quests 23-24 it was to go for 400-900 tiles off were held
+            // 13 h): after 20 min held with five healing potions or more, one try of 15 min, the retreats going on as ever;
+            // the hold is back at its end.
             if (outmatched(tick) &&
                 std::hypot(static_cast<double>(x - self->x), static_cast<double>(y - self->y)) > 15.0 * kTileSize)
             {
-                setIntent(Intent::Farm, "outmatched here: farming where the enemies are not above the hero first");
-                return true;
+                static DWORD s_heldSince = 0, s_tryUntil = 0;
+                bool held = true;
+                if (s_tryUntil && static_cast<int>(tick - s_tryUntil) < 0)
+                {
+                    held = false;
+                }
+                else
+                {
+                    s_heldSince = s_heldSince ? s_heldSince : tick;
+                    if (tick - s_heldSince > 1200000 && Gear::healingLeft() >= 5)
+                    {
+                        s_tryUntil = tick + 900000;
+                        s_heldSince = 0;
+                        held = false;
+                        LOG("AutoAttack: outmatched for 20 min with {} potions: the quests are tried for 15 min", Gear::healingLeft());
+                    }
+                }
+                if (held)
+                {
+                    setIntent(Intent::Farm, "outmatched here: farming where the enemies are not above the hero first");
+                    return true;
+                }
             }
             // A goal at hand is no trip into hard ground: the Daemon's start (a tutorial yard, region 59 marked
             // levels 45-80, its main quest 8 tiles off behind a script's blocker) farmed instead, shut in, 14 min.
