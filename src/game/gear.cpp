@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <mutex>
 #include <format>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -152,6 +153,91 @@ namespace
         }
     }
     std::unordered_set<uint32_t> g_sold;
+    // The hero values his money (the owner, 2026-11-17 14:30: «el agente también tiene que saber valorizar su
+    // dinero»; A7 bought a healing potion for 256 and sold it for 91, in a loop). Each trade by item type: none sold
+    // that was bought in the last 30 min, none bought that was sold then; a type bought and sold twice in 10 min is
+    // left out of trade for an hour. The gold in and out by reason, logged every hour.
+    struct Trade
+    {
+        DWORD at = 0;
+        bool buy = false;
+        uint32_t type = 0;
+    };
+    std::deque<Trade> g_trades;
+    std::unordered_map<uint32_t, DWORD> g_typeFrozen;   // type -> until
+    std::unordered_map<std::string, uint64_t> g_goldIn, g_goldOut;
+    DWORD g_ledgerSince = 0;
+    bool tradeBlocked(bool buy, uint32_t type)
+    {
+        const DWORD now = GetTickCount();
+        if (const auto f = g_typeFrozen.find(type); f != g_typeFrozen.end())
+        {
+            if (static_cast<int>(now - f->second) < 0)
+            {
+                return true;
+            }
+            g_typeFrozen.erase(f);
+        }
+        return std::any_of(g_trades.begin(), g_trades.end(), [&](const Trade& t) {
+            return t.type == type && t.buy != buy && now - t.at < 1800000;
+        });
+    }
+    void noteTrade(bool buy, uint32_t type, uint32_t price, const std::string& why)
+    {
+        const DWORD now = GetTickCount();
+        while (!g_trades.empty() && now - g_trades.front().at > 3600000)
+        {
+            g_trades.pop_front();
+        }
+        g_trades.push_back({now, buy, type});
+        (buy ? g_goldOut : g_goldIn)[why] += price;
+        if (type)
+        {
+            int bought = 0, sold = 0;
+            for (const Trade& t : g_trades)
+            {
+                if (t.type == type && now - t.at < 600000)
+                {
+                    ++(t.buy ? bought : sold);
+                }
+            }
+            if (bought >= 2 && sold >= 2 && !g_typeFrozen.count(type))
+            {
+                g_typeFrozen[type] = now + 3600000;
+                LOG("Gear: type {:x} bought {} and sold {} times in 10 min: a buy-and-sell loop, its trade stopped for 1 h",
+                    type, bought, sold);
+            }
+        }
+        if (!g_ledgerSince)
+        {
+            g_ledgerSince = now;
+        }
+        else if (now - g_ledgerSince > 3600000)
+        {
+            const auto list = [](const std::unordered_map<std::string, uint64_t>& m) {
+                std::string out;
+                uint64_t total = 0;
+                for (const auto& [k, v] : m)
+                {
+                    out += (out.empty() ? "" : ", ") + k + " " + std::to_string(v);
+                    total += v;
+                }
+                return std::to_string(total) + (out.empty() ? "" : " (" + out + ")");
+            };
+            LOG("Gear: gold in the last {} min: in {}; out {}", (now - g_ledgerSince) / 60000, list(g_goldIn),
+                list(g_goldOut));
+            g_goldIn.clear();
+            g_goldOut.clear();
+            g_ledgerSince = now;
+        }
+    }
+    // The gold kept back for upgrades by the hero's level (500 a level, from level 5): small buys (potions past the
+    // need, the other potions) do not spend it; the upgrades and the craftsmen do.
+    uint32_t upgradeReserve()
+    {
+        const int level = HeroProfile::current().level;
+        return level >= 5 ? static_cast<uint32_t>(level) * 500u : 0u;
+    }
     bool merchantTakes(uint32_t type);
     int tabFor(uint32_t type);
     bool packFull(uint8_t* pack);
@@ -1010,10 +1096,15 @@ namespace
                 ++g_sellWhy[8];
                 return;
             }
-            if (const auto b = g_bought.find(id); b != g_bought.end() && now - b->second < 600000)
+            if (const auto b = g_bought.find(id); b != g_bought.end() && now - b->second < 1800000)
             {
                 ++g_sellWhy[9];
-                return;     // bought within the hour: not sold back at a loss
+                return;     // bought within 30 min: not sold back at a loss
+            }
+            if (tradeBlocked(false, typeOf(id)))
+            {
+                ++g_sellWhy[9];
+                return;     // its type bought within 30 min, or in a buy-and-sell loop
             }
             if (g_storageKeep.count(id))
             {
@@ -1053,6 +1144,7 @@ namespace
                 fn<AddGold>(g_addGold)(reinterpret_cast<uint8_t*>(hero) + kStats, nullptr, static_cast<int>(price));
                 LOG("Gear: sold {:x} (type {:x}) for {} gold on the {} tab{}", id, typeOf(id), price,
                     page == 0 ? "first" : page == 1 ? "second" : "third", classOk ? "" : " (not for this class)");
+                noteTrade(false, typeOf(id), price, healingType(typeOf(id)) ? "potions sold" : "items sold");
                 if (!weaponNote.empty())
                 {
                     LOG("Gear: sold {:x}{}", id, weaponNote);
@@ -1180,6 +1272,17 @@ namespace
                     why = "no room in the backpack";
                     return;
                 }
+                // Past the class's own stock (the potions of gold to spare): not out of the upgrades' reserve
+                if (have >= Mind::now().potionStock && gold < price + upgradeReserve())
+                {
+                    why = "the upgrades' reserve kept";
+                    return;
+                }
+                if (tradeBlocked(true, typeOf(id)))
+                {
+                    why = "its type sold within 30 min or in a buy-and-sell loop";
+                    return;
+                }
                 if (!Act::allowed(Act::Kind::Buy, "buy a healing potion"))
                 {
                     why = "not allowed";
@@ -1193,8 +1296,10 @@ namespace
                     *reinterpret_cast<uint32_t*>(info + 4) &= ~0x200000u;
                 }
                 fn<PutItem>(g_putItem)(pack, nullptr, free, id, w, h, 1);
-                LOG("Gear: bought healing potion {:x} (type {:x}) for {} gold (of {}); potions: have {}, want {}", id,
-                    typeOf(id), price, gold, countHealing(pack), wantHealing());
+                LOG("Gear: bought healing potion {:x} (type {:x}) for {} gold (of {}); potions: have {}, want {} (why: {})",
+                    id, typeOf(id), price, gold, countHealing(pack), wantHealing(),
+                    have < Mind::now().potionStock ? "the class's stock" : "gold to spare, up to the want");
+                noteTrade(true, typeOf(id), price, "healing potions");
                 done = true;
                 s_lastBuy = now;
             });
@@ -1269,8 +1374,8 @@ namespace
                     }
                     const uint32_t price = fn<Price>(g_price)(inv, nullptr, id, 1);
                     uint16_t free = 0;
-                    if (!price || price > 2 * g_potionPrice || gold < price + 2 * g_potionPrice + 300 ||
-                        !fn<FindFree>(g_findFree)(pack, nullptr, w, h, &free, 0))
+                    if (!price || price > 2 * g_potionPrice || gold < price + 2 * g_potionPrice + 300 + upgradeReserve() ||
+                        !fn<FindFree>(g_findFree)(pack, nullptr, w, h, &free, 0) || tradeBlocked(true, typeOf(id)))
                     {
                         return;
                     }
@@ -1286,8 +1391,10 @@ namespace
                         *reinterpret_cast<uint32_t*>(info + 4) &= ~0x200000u;
                     }
                     fn<PutItem>(g_putItem)(pack, nullptr, free, id, w, h, 1);
-                    LOG("Gear: bought a {} potion {:x} (type {:x}) for {} gold (of {}); have {}, want {}", kind.name, id,
-                        typeOf(id), price, gold, have + 1, kind.want);
+                    LOG("Gear: bought a {} potion {:x} (type {:x}) for {} gold (of {}); have {}, want {} (why: the guide's "
+                        "stock)",
+                        kind.name, id, typeOf(id), price, gold, have + 1, kind.want);
+                    noteTrade(true, typeOf(id), price, "other potions");
                     done = true;
                 });
             }
@@ -1346,9 +1453,16 @@ namespace
                 {
                     return;
                 }
-                if (g_sold.count(id))
+                if (g_sold.count(id) || tradeBlocked(true, typeOf(id)))
                 {
-                    return;     // the hero's own, sold: never bought back for more
+                    return;     // the hero's own, sold: never bought back for more; nor a type sold within 30 min
+                }
+                // Price against value: over 5 times what selling it gives back, only a clear upgrade (30 %)
+                const uint32_t back = fn<Price>(g_price)(inv, nullptr, id, 0);
+                const bool clear = bestSlot(hero, id, 0.30f) >= 0;
+                if (back && price > 5u * back && !clear)
+                {
+                    return;
                 }
                 if (!Act::allowed(Act::Kind::Buy, "buy a better item"))
                 {
@@ -1364,7 +1478,9 @@ namespace
                     *reinterpret_cast<uint32_t*>(info + 4) &= ~0x200000u;
                 }
                 fn<PutItem>(g_putItem)(pack, nullptr, free, id, w, h, 1);
-                LOG("Gear: bought {:x} (type {:x}) for {} gold (of {})", id, typeOf(id), price, gold);
+                LOG("Gear: bought {:x} (type {:x}) for {} gold (of {}; sold back {}) (why: an upgrade {})", id, typeOf(id),
+                    price, gold, back, clear ? "by 30 % or more" : "by 15 % or more");
+                noteTrade(true, typeOf(id), price, "upgrades");
                 done = true;
             });
             if (done)
@@ -3207,6 +3323,7 @@ namespace
                 s_picked.push_back(s_pick.type);
                 LOG("Gear: 4 runes of other classes swapped for {} gold (type {:x}, an art not learned yet)", price4,
                     s_pick.type);
+                noteTrade(true, 0, price4, "rune swaps");
                 return true;
             }
         }
@@ -3224,6 +3341,7 @@ namespace
                     fn<UiCall>(kDoSwap)(lotto, nullptr);
                 }
                 LOG("Gear: 3 runes of other classes swapped for {} gold (one of the hero's class)", price);
+                noteTrade(true, 0, price, "rune swaps");
                 return true;
             }
         }
@@ -3873,6 +3991,7 @@ namespace
         fn<AddGold>(g_addGold)(reinterpret_cast<uint8_t*>(hero) + kStats, nullptr, -static_cast<int>(price));
         const uint32_t own = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x570);
         LOG("Gear: horse {:x} bought for {} gold (the hero's horse now {:x})", horseId, price, own);
+        noteTrade(true, 0, price, "horse");
         return close("bought");
     }
 
