@@ -6706,6 +6706,47 @@ namespace
         {
             return false;
         }
+        // From the outside, on the side away from the goal (Manolito, block BV, 2026-11-17: A4 stood at 1949,3263, behind the
+        // house whose only way in is the gate ed1 at 1950,3270, on its south side, the item at 1948,3266 inside; the click
+        // on a gate sends the hero to its front or back use point and from the north it had none to reach): 3 tiles
+        // beyond the door along the line from the goal through it, walked to before the click, for 40 s at most.
+        {
+            cObjectManager* om = cObjectManager::instance();
+            const cCreature* hero = om ? om->hero() : nullptr;
+            const cObject* d = om ? om->object(door.id) : nullptr;
+            static uint32_t s_approachId = 0;
+            static DWORD s_approachSince = 0;
+            if (hero && d && !*(reinterpret_cast<const uint8_t*>(hero) + 0x24))
+            {
+                const double gx = static_cast<double>(d->x - x), gy = static_cast<double>(d->y - y);
+                const double gl = std::hypot(gx, gy);
+                if (gl > 1.0 * kTileSize)
+                {
+                    const int32_t px = static_cast<int32_t>(d->x + gx / gl * 3.0 * kTileSize);
+                    const int32_t py = static_cast<int32_t>(d->y + gy / gl * 3.0 * kTileSize);
+                    if (s_approachId != door.id)
+                    {
+                        s_approachId = door.id;
+                        s_approachSince = now;
+                    }
+                    const double toP = std::hypot(static_cast<double>(px - hero->x), static_cast<double>(py - hero->y));
+                    if (toP > 3.5 * kTileSize && now - s_approachSince < 40000)
+                    {
+                        static DWORD s_toldAt = 0;
+                        if (now - s_toldAt > 20000)
+                        {
+                            s_toldAt = now;
+                            LOG("AutoAttack: the shut door {:x} near tile {},{}: to its outside at {},{} first ({:.0f} tiles)", door.id,
+                                static_cast<int>(x / kTileSize), static_cast<int>(y / kTileSize), static_cast<int>(px / kTileSize),
+                                static_cast<int>(py / kTileSize), toP / kTileSize);
+                        }
+                        ClickWalk::walkTo(px, py, false);
+                        g_doorHoldUntil = now + 3000;
+                        return true;
+                    }
+                }
+            }
+        }
         g_doorTried[door.id] = now;
         g_doorHoldUntil = now + 1500;
         LOG("AutoAttack: no nearer to tile {},{}: the shut door {:x} near it used", static_cast<int>(x / kTileSize),
