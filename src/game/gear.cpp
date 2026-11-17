@@ -530,6 +530,7 @@ namespace
     int slotsOpen(const cCreature* hero);
     int slotElement(uint32_t id);
     uint32_t slotWeapon(const uint8_t* pack, int slot);
+    bool elementsFit(const uint8_t* pack, int open, int except, uint32_t candidate);
 
     int bestSlot(cCreature* hero, uint32_t id, float margin, uint32_t* replaced = nullptr, bool* fits = nullptr,
                  bool ownFirst = true)
@@ -631,20 +632,9 @@ namespace
                 // Never an element another weapon slot holds (the player, 2026-11-16 23:00: «nunca armas del mismo
                 // elemento en ranuras diferentes»).
                 const uint8_t* pack = entryOf(static_cast<int>(hero->id));
-                const int element = slotElement(id);
-                if (pack && element >= 0)
+                if (pack && !elementsFit(pack, slotsOpen(hero), *reinterpret_cast<const uint16_t*>(pack + 0xD58), id))
                 {
-                    const int inUse = *reinterpret_cast<const uint16_t*>(pack + 0xD58);   // kActiveSlot
-                    bool taken = false;
-                    for (int s = 0, open = slotsOpen(hero); s < open && !taken; ++s)
-                    {
-                        const uint32_t w = s == inUse ? 0 : slotWeapon(pack, s);
-                        taken = w && w != id && slotElement(w) == element;
-                    }
-                    if (taken)
-                    {
-                        continue;
-                    }
+                    continue;
                 }
             }
             const Worth now = current ? worth(current) : Worth{};
@@ -861,29 +851,26 @@ namespace
     bool slotsWant(cCreature* hero, const uint8_t* pack, uint32_t id)
     {
         void* types = typeMgr();
-        const int element = slotElement(id);
-        if (!types || element < 0 || styleOf(id) < 0 || !fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) ||
-            !fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
+        if (!types || slotElement(id) < 0 || styleOf(id) < 0 ||
+            !fn<SlotAccepts>(g_slotAccepts)(types, nullptr, 13, typeOf(id)) || !fn<CanUse>(g_canUse)(hero, nullptr, id, 0))
         {
             return false;
         }
         const int open = slotsOpen(hero);
         const int active = *reinterpret_cast<const uint16_t*>(pack + 0xD58);   // kActiveSlot
-        bool empty = false;
         for (int slot = 0; slot < open; ++slot)
         {
-            const uint32_t w = slotWeapon(pack, slot);
-            if (!w)
+            if (slot == active)
             {
-                empty = empty || slot != active;
                 continue;
             }
-            if (slotElement(w) == element)
+            const uint32_t w = slotWeapon(pack, slot);
+            if ((!w || worth(id).score > worth(w).score * 1.05f) && elementsFit(pack, open, slot, id))
             {
-                return slot != active && worth(id).score > worth(w).score * 1.05f;
+                return true;
             }
         }
-        return empty;
+        return false;
     }
 
     bool sellOne(cCreature* hero, uint8_t* pack)
@@ -1901,6 +1888,71 @@ namespace
         return kinds > 1 ? 4 : element;
     }
 
+    // The elements a weapon deals: physical always (every weapon deals some), and fire, magic, poison when it deals
+    // any. Bits 0..3 as the game's damage kinds. 0: no damage.
+    int elementMask(uint32_t id)
+    {
+        float d[4] = {};
+        if (!id || !damageOf(id, d))
+        {
+            return 0;
+        }
+        int mask = 1;
+        for (int k = 1; k < 4; ++k)
+        {
+            mask |= d[k] > 0.0f ? 1 << k : 0;
+        }
+        return mask;
+    }
+
+    bool assignElements(const int* masks, int n, int used)
+    {
+        if (n == 0)
+        {
+            return true;
+        }
+        for (int k = 0; k < 4; ++k)
+        {
+            if ((masks[0] >> k & 1) && !(used >> k & 1) && assignElements(masks + 1, n - 1, used | 1 << k))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Each weapon slot a different element, its weapon one dealing it (the player, 2026-11-17: «difícilmente un arma
+    // tenga solamente un elemento, lo que no puede coincidir es que el arma para el estilo de batalla fuego no
+    // inflija daño de fuego»): the slots' weapons but `except`'s (and `candidate` wherever it is), with `candidate`
+    // added, can each be given an element of their own among those they deal. A fire and poison weapon serves as
+    // the fire slot's or the poison slot's; two physical only weapons never.
+    bool elementsFit(const uint8_t* pack, int open, int except, uint32_t candidate)
+    {
+        int masks[8] = {};
+        int n = 0;
+        for (int slot = 0; slot < open && n < 7; ++slot)
+        {
+            const uint32_t w = slot == except ? 0 : slotWeapon(pack, slot);
+            if (w && w != candidate)
+            {
+                if (const int m = elementMask(w))
+                {
+                    masks[n++] = m;
+                }
+            }
+        }
+        if (candidate)
+        {
+            const int m = elementMask(candidate);
+            if (!m)
+            {
+                return false;
+            }
+            masks[n++] = m;
+        }
+        return assignElements(masks, n, 0);
+    }
+
     const char* elementName(int k)
     {
         return k == 4 ? "mixed" : kindName(k);
@@ -1961,9 +2013,9 @@ namespace
             {
                 styles[st] = true;
             }
-            if (const int el = slotElement(w); el >= 0)
+            for (int k = 0, m = elementMask(w); k < 4; ++k)
             {
-                elements[el] = true;
+                elements[k] = elements[k] || (m >> k & 1);
             }
         }
     }
@@ -2042,7 +2094,7 @@ namespace
             {
                 return;
             }
-            if (const int el = slotElement(id); el >= 0 && takenElements[el])
+            if (!elementsFit(pack, open, empty >= 0 ? empty : (active == 0 ? 1 : 0), id))
             {
                 return;
             }
@@ -2342,29 +2394,30 @@ namespace
         };
         // Never one element in two weapon slots (the player, 2026-11-16 23:00: «nunca armas del mismo elemento en
         // ranuras diferentes»): of two, the weaker one not in use back to the backpack, even with nothing for it.
-        for (int a = 0; a < open; ++a)
+        // Each slot an element of its own its weapon deals: when the slots' weapons cannot be so, of the slots not in
+        // use the weakest one whose leaving lets the others be goes back to the backpack.
+        if (!elementsFit(pack, open, -1, 0))
         {
-            for (int b = a + 1; b < open; ++b)
+            int weak = -1;
+            for (int slot = 0; slot < open; ++slot)
             {
-                const uint32_t wa = slotWeapon(pack, a), wb = slotWeapon(pack, b);
-                if (!wa || !wb || slotElement(wa) < 0 || slotElement(wa) != slotElement(wb))
+                const uint32_t w = slotWeapon(pack, slot);
+                if (!w || slot == active || (!agentCopy() && !g_agentPut.count(w)) || !elementsFit(pack, open, slot, 0))
                 {
                     continue;
                 }
-                int weak = worth(wa).score < worth(wb).score ? a : b;
-                weak = weak == active ? (weak == a ? b : a) : weak;
-                if (weak == active || (!agentCopy() && !g_agentPut.count(slotWeapon(pack, weak))))
-                {
-                    continue;
-                }
-                if (!Act::allowed(Act::Kind::WeaponSlots, "give back a weapon whose element another weapon slot has"))
+                weak = weak < 0 || worth(w).score < worth(slotWeapon(pack, weak)).score ? slot : weak;
+            }
+            if (weak >= 0)
+            {
+                if (!Act::allowed(Act::Kind::WeaponSlots, "give back a weapon with no element of its own beside the other slots"))
                 {
                     return false;
                 }
                 if (giveBack(pack, weak))
                 {
-                    LOG("Gear: weapon slot {} repeats slot {}'s element ({}): its weapons back to the backpack",
-                        weak + 1, (weak == a ? b : a) + 1, elementName(slotElement(wa)));
+                    LOG("Gear: weapon slot {} has no element of its own beside the other slots (it deals {}): its weapons "
+                        "back to the backpack", weak + 1, elementName(slotElement(slotWeapon(pack, weak))));
                     return true;
                 }
             }
@@ -2383,7 +2436,8 @@ namespace
             {
                 const uint32_t wa = slotWeapon(pack, a), wb = slotWeapon(pack, b);
                 const bool sameStyle = wa && wb && styleOf(wa) == styleOf(wb);
-                const bool sameElement = wa && wb && slotElement(wa) >= 0 && slotElement(wa) == slotElement(wb);
+                const int ma = elementMask(wa), mb = elementMask(wb);
+                const bool sameElement = ma && mb && !assignElements(std::array<int, 2>{ma, mb}.data(), 2, 0);
                 if (!sameStyle && !sameElement)
                 {
                     continue;
@@ -2436,6 +2490,7 @@ namespace
         // Of the backpack's weapons with neither a style nor an element another slot has, the one worth most.
         // The hero's class's own first: one of them however it scores against a common one; a common one only with
         // none of its own and the slot not waiting for one (ownOnly).
+        int fitExcept = -1;   // the slot `distinct` fills
         const auto distinct = [&](const bool styles[5], const bool elements[5], float& bestScore, bool ownOnly,
                                   int relax) {
             uint32_t best = 0, own = 0;
@@ -2451,8 +2506,10 @@ namespace
                 {
                     return;
                 }
-                const int kind = slotElement(id), style = styleOf(id);
-                if (kind < 0 || style < 0 || (relax < 1 && styles[style]) || elements[kind])
+                (void)elements;
+                const int style = styleOf(id);
+                if (slotElement(id) < 0 || style < 0 || (relax < 1 && styles[style]) ||
+                    !elementsFit(pack, open, fitExcept, id))
                 {
                     return;
                 }
@@ -2507,6 +2564,7 @@ namespace
                 bool styles[5] = {}, elements[5] = {};
                 slotsTaken(pack, open, t.slot, styles, elements);
                 float score = 0.0f;
+                fitExcept = t.slot;
                 if (const uint32_t id = distinct(styles, elements, score, t.ownOnly, relax);
                     id && (t.minScore <= 0.0f || score > t.minScore))
                 {
