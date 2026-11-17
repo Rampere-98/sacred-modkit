@@ -19,6 +19,7 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <mutex>
 #include <cmath>
 #include <vector>
 #include <atomic>
@@ -120,6 +121,36 @@ namespace
     std::unordered_map<uint32_t, DWORD> g_noPutOn, g_bought;
     // The weapons the agent put in a weapon slot this run (the reviewer, P5: a slot the player made is never emptied).
     std::unordered_set<uint32_t> g_agentPut;
+    // The weapons seen in the hero's weapon slots or hands in the last 30 min (Gear's work, about once a second): his
+    // own, picked up again whatever their grade if they land on the ground (A2, 2026-11-17: a bow and a crossbow thrown
+    // by Throwing Blades, left lying as «white»).
+    std::unordered_map<uint32_t, DWORD> g_heldAt;
+    std::mutex g_heldLock;
+
+    void noteHeld(const cCreature* hero, const uint8_t* pack)
+    {
+        const DWORD now = GetTickCount();
+        const auto* equipment = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x1A4);
+        std::lock_guard lock(g_heldLock);
+        const auto note = [&](uint32_t id) {
+            if (id)
+            {
+                g_heldAt[id] = now;
+            }
+        };
+        for (int slot = 0; slot < 5; ++slot)
+        {
+            note(*reinterpret_cast<const uint32_t*>(pack + 0xC18 + slot * 0x18));
+            note(*reinterpret_cast<const uint32_t*>(pack + 0xC18 + slot * 0x18 + 0xC));
+        }
+        note(equipment[12]);
+        note(equipment[13]);
+        note(equipment[14]);
+        if (g_heldAt.size() > 64)
+        {
+            std::erase_if(g_heldAt, [&](const auto& e) { return now - e.second > 1800000; });
+        }
+    }
     std::unordered_set<uint32_t> g_sold;
     bool merchantTakes(uint32_t type);
     int tabFor(uint32_t type);
@@ -4458,6 +4489,7 @@ namespace
         if (hero && inv && pack && hero->health > 0)
         {
             closeLeftOpen(hero);
+            noteHeld(hero, pack);
             // A laboratory copy's gold never runs out (Cheats: its own switch), by the game's own addGold.
             if (Cheats::on(Cheats::Id::GoldNoEnd))
             {
@@ -5279,6 +5311,18 @@ bool Gear::sorting()
 bool Gear::storagePending()
 {
     return g_storageId.load() != 0 && !g_storageShown.load() && !g_storageDone.load();
+}
+
+bool Gear::heroWeapon(uint32_t id)
+{
+    if (!id)
+    {
+        return false;
+    }
+    std::lock_guard lock(g_heldLock);
+    const auto at = g_heldAt.find(id);
+    // The slots' weapons are in g_heldAt too (g_agentPut is the game thread's, not read here).
+    return at != g_heldAt.end() && GetTickCount() - at->second < 1800000;
 }
 
 int Gear::slotWeapons(int slot)

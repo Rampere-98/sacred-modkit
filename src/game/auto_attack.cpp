@@ -644,7 +644,7 @@ namespace
         const bool goldEnough = hero && static_cast<uint64_t>(heroGold) >=
                                             static_cast<uint64_t>(Config::autoAttack.rarityGoldPerLevel) * std::max(heroLevel, 1);
         const bool droppedGold = object && (*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(object) + 0x14) & 0x00100000);
-        if (loot == Loot::Item && goldEnough && !droppedGold && isEquipment(object) &&
+        if (loot == Loot::Item && goldEnough && !droppedGold && isEquipment(object) && !Gear::heroWeapon(id) &&
             (Config::autoAttack.minRarity > 0 || !Config::autoAttack.keepSets))
         {
             const int grade = Gear::grade(id, true);
