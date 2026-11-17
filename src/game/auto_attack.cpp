@@ -3647,6 +3647,38 @@ namespace
         return 0;
     }
 
+    // Quests that fail if left once taken, with no timer the agent reads (docs/QUESTS.md, their «Trampas» from the
+    // game's own Qfail texts): defences and races («You turned tail»: A5 2026-11-17 01:29, 703 «Un puente lejano»
+    // taken and followed from 809 tiles off, failed on the way), those whose people die if not reached in time, and
+    // the deadlines of one to three game days. Done at once, before anything else, like the escorts (tier 2); their
+    // giver is not spoken to until the hero has the level of its ground (the coordinator, 2026-11-17).
+    bool doneAtOnce(int32_t number)
+    {
+        static constexpr int32_t kAtOnce[] = {
+            // defences and races
+            rq(3, 1),   // ¡Orcos!: the farmers die if the orcs reach them
+            rq(4, 3),   // Bestias feroces: the cows
+            rq(7, 1),   // Pozos envenenados: the King's spy dies when Faeries Crossing is overrun
+            rq(7, 3),   // Un puente lejano: defend the bridge, fails if the hero is not there
+            rq(10, 3),  // El Campamento gitano: a race behind the gypsy
+            rq(11, 1),  // Hábitos negros: the girl on the altar
+            rq(22, 1),  // El Monstruo Araña de Moorbrook: the girl
+            // deadlines of one to three game days
+            rq(1, 2),   // Mensajero: 3 days
+            rq(9, 1),   // Secuestradas: 3 days, the women follow the hero
+            rq(11, 2),  // Situación comprometida: 1 day
+            rq(12, 2),  // Hierbas curativas: 3 days
+            rq(13, 2),  // El Torneo: 3 days
+            rq(13, 3),  // Mensajero de mercancías: 3 days
+            rq(14, 1),  // Negocios turbios: 1 day, and an escort
+            rq(18, 3),  // Kalim-Khor: 3 days
+            5005,       // Pony Express: a relay against the clock
+            // escorts whose objective may not read as one (Lore::kindOf covers the rest)
+            rq(2, 2), rq(8, 1), rq(14, 3), rq(14, 4), rq(15, 2), rq(16, 2), rq(17, 1), rq(19, 3), rq(24, 2), rq(24, 3),
+            rq(25, 1), 9010, 6003, 10254, 15005};
+        return std::find(std::begin(kAtOnce), std::end(kAtOnce), number) != std::end(kAtOnce);
+    }
+
     // The game minutes left on a quest's deadline, -1 if none (Manolito's block W2, 2026-11-10): the script's
     // timers at [0xAA4540] +0x2C..+0x30, 0x4C bytes each (+0 key = the quest's number, +4 length and +8 start in
     // game minutes); the clock's date at +0x18 (u32 year, u16 month, day, hour, minute). Timers of 6 h or less are
@@ -4104,7 +4136,7 @@ namespace
             {
                 if (g.kind == GoalKind::Journal && !g.main && g.tier < 2 &&
                     (std::find(std::begin(kEscorts), std::end(kEscorts), g.number) != std::end(kEscorts) ||
-                     Lore::kindOf(g.titleKey, g.objectiveKey) == Lore::QuestKind::Escort))
+                     doneAtOnce(g.number) || Lore::kindOf(g.titleKey, g.objectiveKey) == Lore::QuestKind::Escort))
                 {
                     g.tier = 2;
                     // Once a quest each run (two escorts open at once flipped a single «told», 2026-11-17: A5 1096
@@ -4113,7 +4145,9 @@ namespace
                     if (std::find(s_told.begin(), s_told.end(), g.number) == s_told.end())
                     {
                         s_told.push_back(g.number);
-                        LOG("AutoAttack: quest {} is an escort: first of all, until done", g.number);
+                        LOG("AutoAttack: quest {} is an escort or fails if left (a defence, a short deadline): first of "
+                            "all, until done",
+                            g.number);
                     }
                 }
             }
@@ -4362,7 +4396,8 @@ namespace
                 {
                     continue;
                 }
-                if ((heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number))
+                if ((heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number) ||
+                    (doneAtOnce(q.number) && heroLv > 0 && heroLv < q.lo))
                 {
                     continue;
                 }
@@ -4501,6 +4536,18 @@ namespace
                 if (g.number == quest && heroLevel > 0 && heroLevel < level)
                 {
                     g.blocked = true;
+                }
+            }
+            // A quest done at once on offer (its sign at its giver): not taken while the hero is under its ground's
+            // level, as it would have to be done there and then.
+            if (g.kind == GoalKind::Offer && doneAtOnce(g.number) && heroLevel > 0)
+            {
+                for (const QuestGiver& q : kQuestGivers)
+                {
+                    if (q.number == g.number && heroLevel < q.lo)
+                    {
+                        g.blocked = true;
+                    }
                 }
             }
         }
