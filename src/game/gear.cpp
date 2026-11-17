@@ -5884,9 +5884,22 @@ bool Gear::chooseWeaponFor(uint32_t targetId)
     }
     // Only for a clear gain (30 %), and not within 20 s of the last switch: no switching back and forth (the analyst,
     // 2026-11-12, docs/Criterios.md: the 4502AE crashes came a few ms after a slot switch; 15 % and 10 s let it flip).
-    if (best == active || bestDamage < current * 1.3f + 0.5f || GetTickCount() - g_slotSwitchAt < 20000)
+    // A weapon never held yet is judged by an estimate (the mean ratio of those learned) and is never learned unless
+    // held: close to the active one (90 % or more) it is tried once, then judged by its own panel (A6, A8, 2026-11-17
+    // 17:45-17:53: a slot at 1.05-1.25 times the active one by the estimate, never tried in 30 min).
+    static std::unordered_set<uint32_t> s_learnTried;
+    const uint32_t bestWeapon = best != active ? slotWeapon(pack, best) : 0;
+    const bool learn = bestWeapon && !g_panelPlain.count(bestWeapon) && !s_learnTried.count(bestWeapon) &&
+                       bestDamage >= current * 0.9f;
+    if (best == active || (bestDamage < current * 1.3f + 0.5f && !learn) || GetTickCount() - g_slotSwitchAt < 20000)
     {
         return false;
+    }
+    if (learn)
+    {
+        s_learnTried.insert(bestWeapon);
+        LOG("Gear: weapon slot {}'s weapon {:x} not held yet (estimated {:.0f} against {:.0f}): tried once to learn its "
+            "damage", best + 1, bestWeapon, bestDamage, current);
     }
     if (!Act::allowed(Act::Kind::WeaponSlots, "switch to the weapon slot that does more against this enemy"))
     {
