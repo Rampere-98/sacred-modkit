@@ -1006,6 +1006,7 @@ namespace
         uint32_t id = 0;
         DWORD at = 0;
         bool told = true;
+        double tiles = -1.0;    // the hero's distance to the door (Chebyshev, tiles) when the click went out
     } g_doorUse;
     // The door the hero is walking up to for a click: attack() is called again from doorPendingTick every second, 25 s at most.
     struct DoorPending
@@ -1048,13 +1049,18 @@ namespace
         uint32_t key = 0;
         if (o && !o->x && !o->y)
         {
-            LOG("AutoAttack: door {:x} clicked {:.1f} s ago: no longer loaded (its position reads 0,0): no state", g_doorUse.id,
-                (now - g_doorUse.at) / 1000.0);
+            LOG("AutoAttack: door {:x} clicked {:.1f} s ago from {:.1f} tiles: no longer loaded (its position reads 0,0): no state",
+                g_doorUse.id, (now - g_doorUse.at) / 1000.0, g_doorUse.tiles);
         }
         else if (o && doorTrigger(o, state, key))
         {
-            LOG("AutoAttack: door {:x} clicked {:.1f} s ago: now {} (trigger state {:x}, key {:x}, at {},{})", g_doorUse.id,
-                (now - g_doorUse.at) / 1000.0, (state & 1) ? "OPEN" : "still shut", state, key, o->x / 53, o->y / 53);
+            const cCreature* hero = objects ? objects->hero() : nullptr;
+            const double nowTiles = hero ? std::max(std::abs(static_cast<double>(o->x - hero->x)),
+                                                    std::abs(static_cast<double>(o->y - hero->y))) / 53.66563
+                                         : -1.0;
+            LOG("AutoAttack: door {:x} clicked {:.1f} s ago from {:.1f} tiles (hero now {:.1f}): now {} (trigger state {:x}, key {:x}, "
+                "at {},{})", g_doorUse.id, (now - g_doorUse.at) / 1000.0, g_doorUse.tiles, nowTiles,
+                (state & 1) ? "OPEN" : "still shut", state, key, o->x / 53, o->y / 53);
         }
     }
 
@@ -1200,7 +1206,9 @@ namespace
             // every door after the 17:55 install, the hero's order never in mode 1 in a 0.1 s watch of its order fields).
             if (g_cursorFiring || !AgentCursor::active())
             {
-                g_doorUse = {id, now, false};
+                g_doorUse = {id, now, false,
+                             std::max(std::abs(static_cast<double>(target->x - self->x)),
+                                      std::abs(static_cast<double>(target->y - self->y))) / kTileSize};
             }
         }
         UseOrder order;
