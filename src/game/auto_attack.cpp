@@ -4193,6 +4193,26 @@ namespace
     int g_orderPos = 0;                                     // its place, from 1
     // The script's quest values and the givers come to, as the last pass read them (for the order's reasons).
     const std::unordered_map<int32_t, uint32_t>* g_scriptValuesSeen = nullptr;
+    // The quests the script sets up (SetUpQuest, value 1, their givers created) the moment the hero enters their
+    // region, with no other condition: the blocks Region<N>Enter of bin/NetScript (tools/sqw_quest_open.py, 2026-11-18).
+    // Until then the variable is 0 or missing; a player who walks there finds the giver with his sign (the owner,
+    // 2026-11-18: «haz que las misiones puedan ser completadas»: 72 skipped as «not on offer yet»).
+    constexpr int32_t kRegionOpened[] = {
+        201,  202,  203,  204,  301,  302,  303,  401,  402,  403,  501,  502,  503,  601,  602,  603,  701,  702,  703,
+        801,  802,  803,  901,  902,  903,  1001, 1002, 1003, 1101, 1102, 1103, 1111, 1112, 1113, 1201, 1202, 1203, 1301,
+        1302, 1303, 1401, 1402, 1403, 1404, 1405, 1501, 1502, 1503, 1601, 1602, 1603, 1701, 1702, 1703, 1801, 1802, 1803,
+        1901, 1902, 1903, 2001, 2002, 2003, 2101, 2102, 2201, 2202, 2203, 2301, 2302, 2401, 2501, 2502, 2503, 2504};
+    bool regionOpened(int32_t n)
+    {
+        return std::find(std::begin(kRegionOpened), std::end(kRegionOpened), n) != std::end(kRegionOpened);
+    }
+    // On offer, or to be: 1 in the script, a DQ_ one, or one its region's entering sets up and not begun (0 or none).
+    bool offerOrRegion(const std::unordered_map<int32_t, uint32_t>& values, int32_t n)
+    {
+        const auto value = values.find(n);
+        return n >= 10000 || (value != values.end() && value->second == 1) ||
+               (regionOpened(n) && (value == values.end() || value->second == 0));
+    }
     const std::vector<int32_t>* g_giversVisitedSeen = nullptr;
 
     // The script's variables (Manolito's block BN, docs/Misiones-todas.md): a vector [0xAACF80+0x7550 .. +0x7554) of
@@ -4356,8 +4376,7 @@ namespace
                 bool onOffer = false;
                 if (g_scriptValuesSeen)
                 {
-                    const auto value = g_scriptValuesSeen->find(n);
-                    onOffer = n >= 10000 || (value != g_scriptValuesSeen->end() && value->second == 1);
+                    onOffer = offerOrRegion(*g_scriptValuesSeen, n);
                 }
                 if (!giver)
                 {
@@ -5039,7 +5058,16 @@ namespace
                 // A DQ_ quest (10250+) has no script variable (Manolito, block BR): on offer while the journal does not
                 // have it; its giver, set up by QIS_OnSetUp<n>, may not be there at every time (then it is come to and
                 // tried again later, as any giver whose quest was not taken).
-                const bool onOffer = q.number >= 10000 ? true : value != s_values.end() && value->second == 1;
+                const bool onOffer = offerOrRegion(s_values, q.number);
+                if (onOffer && q.number < 10000 && (value == s_values.end() || value->second != 1))
+                {
+                    static std::unordered_set<int32_t> s_regionTold;
+                    if (s_regionTold.insert(q.number).second)
+                    {
+                        LOG("AutoAttack: quest {} set up when the hero enters its region: its giver at tile {},{} gone "
+                            "to", q.number, q.x, q.y);
+                    }
+                }
                 const bool inJournal =
                     std::find(g_doneNumbers.begin(), g_doneNumbers.end(), q.number) != g_doneNumbers.end() ||
                     std::find(g_failedNow.begin(), g_failedNow.end(), q.number) != g_failedNow.end() ||
