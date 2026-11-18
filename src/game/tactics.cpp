@@ -548,6 +548,14 @@ namespace
         {
             return false;
         }
+        // A target on the hero's very spot is no direction: the game's art code divides by the distance's integer root
+        // (Sacred.exe 0x4E1C66, idiv ecx with ecx 0: A6, a Vampiress, art 404 at an enemy in the melee, two crashes
+        // c0000094 on 2026-11-18 02:16 and 02:50). Not sent; the next frame it is tried again once they part.
+        if (target && at_->x == self->x && at_->y == self->y)
+        {
+            LOG("Tactics: art not sent: target {:x} on the hero's very spot (the game would divide by a zero distance)", target);
+            return false;
+        }
         const uint16_t art = at<uint16_t>(engine, kEngineArt);
         if (art >= kArtLimit)
         {
