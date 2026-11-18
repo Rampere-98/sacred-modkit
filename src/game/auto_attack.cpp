@@ -10040,7 +10040,15 @@ namespace
             static int s_hemmed = 0;
             static DWORD s_hemmedAt = 0;
             static int32_t s_hemmedX = 0, s_hemmedY = 0;
-            if (now - s_hemmedAt < 30000 &&
+            // Not counted by a door's landing (within 8 tiles): its step is a cramped spot by nature, and the walk out
+            // of it would be the door itself.
+            const bool byDoor = layer == 0 && RouteNet::nearDoorLanding(static_cast<int>(self->x / kTileSize),
+                                                                        static_cast<int>(self->y / kTileSize), 8);
+            if (byDoor)
+            {
+                s_hemmed = 0;
+            }
+            else if (now - s_hemmedAt < 30000 &&
                 std::hypot(static_cast<double>(self->x - s_hemmedX), static_cast<double>(self->y - s_hemmedY)) < 6.0 * kTileSize)
             {
                 ++s_hemmed;
@@ -10066,10 +10074,19 @@ namespace
                     g_travelBlocked[(static_cast<uint64_t>(static_cast<uint32_t>(g.x / kTileSize)) << 32) |
                                     static_cast<uint32_t>(g.y / kTileSize)] = now + 600000;
                 }
-                const double a = (std::rand() % 360) * 3.14159265358979 / 180.0;
-                int nx = static_cast<int>((self->x + std::cos(a) * 12.0 * kTileSize) / kTileSize);
-                int ny = static_cast<int>((self->y + std::sin(a) * 12.0 * kTileSize) / kTileSize);
-                Whereabouts::nearestReachable(nx, ny, nx, ny);
+                // Ground 12 tiles off, not by a door's landing (8 tries; A5 in cave 5.2 was sent to its way out).
+                int nx = 0, ny = 0;
+                for (int t = 0; t < 8; ++t)
+                {
+                    const double a = (std::rand() % 360) * 3.14159265358979 / 180.0;
+                    nx = static_cast<int>((self->x + std::cos(a) * 12.0 * kTileSize) / kTileSize);
+                    ny = static_cast<int>((self->y + std::sin(a) * 12.0 * kTileSize) / kTileSize);
+                    Whereabouts::nearestReachable(nx, ny, nx, ny);
+                    if (layer != 0 || !RouteNet::nearDoorLanding(nx, ny, 8))
+                    {
+                        break;
+                    }
+                }
                 const int32_t wx = static_cast<int32_t>((nx + 0.5) * kTileSize), wy = static_cast<int32_t>((ny + 0.5) * kTileSize);
                 LOG("AutoAttack: hemmed in 3 times here: a routed walk to tile {},{} and the quest's goal left 10 min", nx, ny);
                 ClickWalk::walkTo(wx, wy, false);
@@ -10091,6 +10108,8 @@ namespace
         // rock or water at once (seen live in a forest: walking, then standing, not a pixel moved, step after step).
         // The step's length out (menu), else shorter down to one tile; none: that way is closed (marked so on the
         // map). The tile's middle.
+        const bool heroByDoor = layer == 0 && RouteNet::nearDoorLanding(static_cast<int>(self->x / kTileSize),
+                                                                         static_cast<int>(self->y / kTileSize), 8);
         const auto stepEnd = [&](double a, int32_t& x, int32_t& y) {
             for (int step = std::clamp(Config::autoAttack.roamStep, 1, 20); step >= 1; --step)
             {
@@ -10098,6 +10117,12 @@ namespace
                 const int tx = static_cast<int>(std::floor((self->x + std::cos(a) * tiles * kTileSize) / kTileSize));
                 const int ty = static_cast<int>(std::floor((self->y + std::sin(a) * tiles * kTileSize) / kTileSize));
                 const int ok = ClickWalk::walkable(layer, tx, ty);
+                // Never onto a door's landing (within 8 tiles; within 3 once the hero stands that near, so it can
+                // roam off it): a roaming step there goes through the door.
+                if (ok != 0 && layer == 0 && RouteNet::nearDoorLanding(tx, ty, heroByDoor ? 3 : 8))
+                {
+                    continue;
+                }
                 if (ok != 0)
                 {
                     x = static_cast<int32_t>((tx + 0.5) * kTileSize);

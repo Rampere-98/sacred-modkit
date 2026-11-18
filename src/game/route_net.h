@@ -51,6 +51,10 @@ namespace RouteNet
     // lair», goal 2004,3627 at cave 5.2's door, the thieves inside).
     // `centreX`, `centreY` (when given): the centre of that interior's box, the place to look for the fights from.
     bool insideAtDoor(int heroX, int heroY, int goalX, int goalY, int* centreX = nullptr, int* centreY = nullptr);
+    // Whether tile (x, y) lies within `r` tiles (Chebyshev) of a door's landing, either end: the door's own step (a cave's
+    // zone) is there, and a roaming step or a walk out of a tight spot onto it takes the hero through (A5, 2026-11-18
+    // 06:32: in cave 5.2, «hemmed in» and a routed walk to 5372,339, 4 tiles from the way-out landing 5368,338).
+    bool nearDoorLanding(int x, int y, int r);
     // The tile to step on to go through a door whose landing is (landX, landY) on `layer`, the hero at (heroX, heroY):
     // a cave's zone beside the landing (Teleports::caveTriggerNear), else the stairs anchor nearest the hero
     // (Teleports::anchorsNear), else the landing. On the game's thread (both read its memory).
