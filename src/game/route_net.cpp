@@ -755,6 +755,25 @@ bool RouteNet::insideAtDoor(int heroX, int heroY, int goalX, int goalY, int* cen
     return false;
 }
 
+bool RouteNet::nearDoorLanding(int x, int y, int r)
+{
+    const std::lock_guard lock(g_lock);
+    if (!g_loaded)
+    {
+        load();
+    }
+    for (const Door& d : g_doors)
+    {
+        const Node& a = g_nodes[d.from];
+        const Node& b = g_nodes[d.to];
+        if (cheb(a.x, a.y, x, y) <= r || cheb(b.x, b.y, x, y) <= r)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void RouteNet::doorStep(int layer, int landX, int landY, int heroX, int heroY, int& stepX, int& stepY)
 {
     stepX = landX;
