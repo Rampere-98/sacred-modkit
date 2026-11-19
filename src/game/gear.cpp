@@ -1361,7 +1361,11 @@ namespace
             // what the equipping asks), or one of the future upgrades kept (the best per body slot, near his level):
             // a piece of the class he will never wear is sold as any other (the player, 2026-11-16, the Seraphim).
             const bool wearable = classOk && fn<CanUse>(g_canUse)(hero, nullptr, id, 0) != 0;
-            const int slot = classOk ? bestSlot(hero, id, 0.05f, nullptr, &fits) : -1;
+            uint32_t replaced = 0;
+            const int slot = classOk ? bestSlot(hero, id, 0.05f, &replaced, &fits) : -1;
+            // The rarity first, then the stats (the owner, 2026-11-19): a piece less rare than the one worn there is
+            // never put on, so it is no upgrade, whatever its score: sold.
+            const bool lowerRarity = slot >= 0 && replaced && rarityLevel(id) < rarityLevel(replaced);
             // An "upgrade" or a weapon the slots want, held over an hour and never put on, is no upgrade the equipping
             // will take (it judges by rarity first, this by the score): sold, or the backpack stays full for hours
             // (the owner, 2026-11-19: «estás con el inventario lleno hace horas»; A2 kept 54 of 58 as "use").
@@ -1373,7 +1377,7 @@ namespace
                 ++g_sellWhy[4];
                 return;
             }
-            if (classOk && fits && slot >= 0 && (unusedLong || (!wearable && !future.count(id))))
+            if (classOk && fits && slot >= 0 && (unusedLong || lowerRarity || (!wearable && !future.count(id))))
             {
                 // of the class, not wearable now nor a future upgrade kept: on to the sale
             }
