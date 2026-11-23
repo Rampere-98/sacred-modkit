@@ -7880,7 +7880,26 @@ namespace
             LOG("AutoAttack: stuck guard: 60 s within 16 tiles out of the fights: the marks «left for now» forgotten");
             Findings::note("stuck", self->x, self->y, "60 s within a box of 16 tiles out of the fights: marks forgotten");
             forgetTalks();
-            g_travelBlocked.clear();
+            // Only the short marks (10 min or less left): the long ones (a goal with no way found three or four times,
+            // 45 min to 2 h) are what the failures taught, and clearing them here sent the hero back to the same goal
+            // just when it was stuck (the study, 2026-11-18, card 11 of Decisiones-agente).
+            size_t kept = 0;
+            for (auto it = g_travelBlocked.begin(); it != g_travelBlocked.end();)
+            {
+                if (static_cast<int>(it->second - now) > 600000)
+                {
+                    ++kept;
+                    ++it;
+                }
+                else
+                {
+                    it = g_travelBlocked.erase(it);
+                }
+            }
+            if (kept)
+            {
+                LOG("AutoAttack: stuck guard: {} long-held goals kept held", kept);
+            }
             return false;
         }
         // First the way it came: points of the trail more than 20 tiles back from here, if it has them.
@@ -8192,7 +8211,9 @@ namespace
                 // The merchant already gone for keeps twice the reach: the walk's length (wayLength) rises and falls
                 // around the limit as the hero fights its way there, and the choice flipped quest/shop every 10-50 s
                 // (the stuck solver, 2026-11-16, A2: «off to merchant 85e (400 tiles)», six flips in 5 minutes).
-                const double shopReach = ((Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2) || Gear::packFull() ? 700.0 : 150.0) *
+                // Pieces taken out of a crowded storage to sell count as a full backpack (a near full one stays at 150:
+                // the quests first).
+                const double shopReach = (Gear::needsLongTrip() ? 700.0 : 150.0) *
                                          (m.id == g_shopId ? 2.0 : 1.0) * kTileSize;
                 if (m.layer == layer && d <= shopReach)
                 {
@@ -8335,7 +8356,8 @@ namespace
             // with «5 merchants known» in the list on all 16 lines: five listed, none chosen (reach, route, failed or
             // layer: the lines below say which), while its map kept three merchants 300 tiles off). It walks to the tile
             // where a shop once opened; the merchant is in the list by then and the trip goes on as always.
-            if (Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2)
+            // The same for a full backpack or pieces taken out to sell (not a near full one: the quests first).
+            if (Gear::needsLongTrip())
             {
                 static std::unordered_map<uint64_t, DWORD> s_remFailedAt;
                 static uint64_t s_remKey = 0;
@@ -11561,6 +11583,13 @@ void AutoAttack::onFrame()
             g_shopId = 0;
             g_shopTold = false;
             ClickWalk::cancel();
+        }
+        // A game loaded (a load only: not a save, a portal or a cave): Gear's town stop and quiet times begun again.
+        static unsigned s_loadsSeen = 0;
+        if (!changing && AgentSave::loads() != s_loadsSeen)
+        {
+            s_loadsSeen = AgentSave::loads();
+            Gear::worldLoaded();
         }
         s_wasChanging = changing;
     }

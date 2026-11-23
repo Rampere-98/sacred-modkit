@@ -22,6 +22,8 @@ namespace Gear
     void prepareFor(int region, int here);
     // The town stop's merchant is all the merchant trip is for (none in reach: prepShopSkip drops it).
     bool prepShopOnly();
+    bool needsLongTrip();   // full, two healing potions or fewer, or storage pieces to sell: a merchant far off too
+    void worldLoaded();     // a game loaded: the town stop's clock and the quiet times begun again
     void prepShopSkip(const char* why);
     // The town stop's storage visit still to do: the storage chest sought farther (120 tiles).
     bool prepStorage();

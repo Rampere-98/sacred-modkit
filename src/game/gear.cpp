@@ -5971,6 +5971,29 @@ void Gear::prepShopSkip(const char* why)
     }
 }
 
+bool Gear::needsLongTrip()
+{
+    return g_ready && (g_full || g_sellTaken || (g_healing >= 0 && g_healing <= 2));
+}
+
+void Gear::worldLoaded()
+{
+    // A load: the town stop and the quiet times are of the game before (A3, 2026-11-23: «town stop for region 15 given
+    // up after 15 min» 7 s after the load, the minutes before the death counted). The need itself (the backpack, the
+    // potions) is read again from the game loaded, so the trip goes on from there if it is still wanted.
+    if (g_prepRegion.load() >= 0)
+    {
+        LOG("Gear: a load: the town stop for region {} begun again from now", g_prepRegion.load());
+        g_prepAt = GetTickCount();
+    }
+    g_prepShopQuiet = 0;
+    g_prepOffAt = 0;
+    g_prepDoneHere = -1;
+    g_noTripUntil = 0;
+    g_tripShop = false;
+    g_tripDone = false;
+}
+
 bool Gear::prepStorage()
 {
     return g_prepStore.load() && Act::may(Act::Kind::Storage);

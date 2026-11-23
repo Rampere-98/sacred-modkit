@@ -35,6 +35,8 @@ namespace AgentSave
     // Counted up at each load and each save asked for: the journal read after it is what the slot holds (AutoAttack
     // tells a quest failed since from one already in the save).
     unsigned generation();
+    // Counted up at each load asked for (not the saves).
+    unsigned loads();
     // Deaths since this copy's slot was last written: the same game loaded again and again (kept across the loads).
     int deathsSinceSave();
 

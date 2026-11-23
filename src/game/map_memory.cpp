@@ -2216,7 +2216,9 @@ bool MapMemory::routeWithin(int layer, int fromX, int fromY, int toX, int toY, i
                 {
                     continue;
                 }
-                v = s == kSharedWalk ? 10 : s == kSharedGate ? 40 : s == kSharedScanShut ? 1 : 0;
+                // Walkable by another copy only: 13, a little over its own 10, so its own ground wins where both go (the study,
+                // 2026-11-18: A5 looping on squares the others called walkable; 12 265 such squares in one box of A5 on 11-23).
+                v = s == kSharedWalk ? 13 : s == kSharedGate ? 40 : s == kSharedScanShut ? 1 : 0;
                 ++fromShared;
             }
         }

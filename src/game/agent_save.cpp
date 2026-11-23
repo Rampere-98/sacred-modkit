@@ -57,6 +57,7 @@ namespace
     DWORD s_noHealthSince = 0;
     std::atomic<bool> g_reloadWanted{false};  // the hero's health read 0 since (a death the edge missed, lain in)  // ... and it was a save (the hero stays in the world, so a death still counts)
     unsigned g_generation = 0;  // each load and each save asked for
+    std::atomic<unsigned> g_loads{0};   // each load asked for
     int g_sub = 0;              // the event's kind for the window's thread
     alignas(8) uint8_t g_event[0x40] = {};
     // Kept beside the slot across the copy's restarts (the live verifier, 2026-11-11: an install restarts all 8
@@ -271,6 +272,7 @@ namespace
     void load(DWORD now, const char* why)
     {
         LOG("AgentSave: {}: loading GAME{:02d}", why, g_slot);
+        ++g_loads;
         g_sub = 1;
         g_actionAt = now;
         g_actionSave = false;
@@ -279,6 +281,11 @@ namespace
         ++g_generation;
         Inject::call(&sendEvent, nullptr);
     }
+}
+
+unsigned AgentSave::loads()
+{
+    return g_loads.load();
 }
 
 unsigned AgentSave::generation()
@@ -443,6 +450,7 @@ bool AgentSave::loadFromMenu()
     *reinterpret_cast<uint32_t*>(setup + 0x14) = 1;
     PostMessageW(window, 0x8002, 1, static_cast<LPARAM>(g_slot));
     g_loadedOnce = true;
+    ++g_loads;
     g_sub = 1;
     g_actionAt = GetTickCount();
     g_actionSave = false;
