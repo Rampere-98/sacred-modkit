@@ -186,13 +186,25 @@ namespace
         // save, so three deaths of the new hero (L2) never load the old one (L27) in its place (the stuck solver,
         // 2026-11-16, the coordinator's catch: the .BAK right after a set-aside was the old hero's).
         const std::wstring base = g_path.substr(0, g_path.size() - 4);
-        const std::wstring bak = base + L".BAK", oldSave = base + L".OLD", oldBak = base + L".OLDBAK";
+        // Never over an earlier hero set aside (2026-11-23, the study: A4's L26 hero would be lost by a second set-aside):
+        // GAMEnn.OLD, then .OLD2, .OLD3... each with its own .OLDBAKk.
+        std::wstring suffix;
+        for (int k = 1; k < 100; ++k)
+        {
+            suffix = k == 1 ? std::wstring() : std::to_wstring(k);
+            if (GetFileAttributesW((base + L".OLD" + suffix).c_str()) == INVALID_FILE_ATTRIBUTES)
+            {
+                break;
+            }
+        }
+        const std::wstring bak = base + L".BAK", oldSave = base + L".OLD" + suffix, oldBak = base + L".OLDBAK" + suffix;
         MoveFileExW(bak.c_str(), oldBak.c_str(), MOVEFILE_REPLACE_EXISTING);
         MoveFileExW(g_path.c_str(), oldSave.c_str(), MOVEFILE_REPLACE_EXISTING);
         g_deathsSinceSave = 0;
         g_spots.clear();
         writeDeaths();
-        LOG("AgentSave: the save is set aside as GAME{:02d}.OLD (its backup .OLDBAK), a new game from the start", g_slot);
+        LOG("AgentSave: the save is set aside as GAME{:02d}.OLD{} (its backup .OLDBAK{}), a new game from the start", g_slot,
+            std::string(suffix.begin(), suffix.end()), std::string(suffix.begin(), suffix.end()));
     }
 
     bool slotFileExists()
@@ -568,6 +580,16 @@ void AgentSave::onFrame()
         }
         if (s_stuckTimes >= 3)
         {
+            // The save before it first, as a player would (2026-11-23: A4's L26 hero was set aside by a decision loop,
+            // not a bad place); only with no backup left, a new game.
+            if (restoreBackup())
+            {
+                LOG("AgentSave: stuck at tile {},{} after {} loads of the same save: the save before it loaded", tx, ty,
+                    s_stuckTimes - 1);
+                s_stuckTimes = 0;
+                load(now, "stuck in one place across loads: the save before it");
+                return;
+            }
             LOG("AgentSave: stuck at tile {},{} after {} loads of the same save: it cannot be played on", tx, ty,
                 s_stuckTimes - 1);
             setAside();

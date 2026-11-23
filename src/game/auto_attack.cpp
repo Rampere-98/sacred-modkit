@@ -1967,8 +1967,10 @@ namespace
             for (const WildHorse& w : g_wildHorses)
             {
                 const auto failed = s_wildFailed.find(w.id);
+                const cCreature* candidate = om ? om->creature(w.id) : nullptr;
                 if (w.worth >= bar && (failed == s_wildFailed.end() || now - failed->second > 600000) &&
-                    (!best || w.worth > best->worth))
+                    (!best || w.worth > best->worth) &&
+                    (!candidate || AutoAttack::canRide(const_cast<cCreature*>(self), const_cast<cCreature*>(candidate))))
                 {
                     best = &w;
                 }
@@ -2005,7 +2007,8 @@ namespace
                 }
                 if (!AutoAttack::canRide(const_cast<cCreature*>(self), const_cast<cCreature*>(wild)))
                 {
-                    LOG("AutoAttack: wild horse {:x}: riding skill too low for it (the game's test): left", s_wildId);
+                    LOG("AutoAttack: wild horse {:x}: riding skill too low for it (the game's test): left 10 min", s_wildId);
+                    s_wildFailed[s_wildId] = now;   // else the next tick picks it again (A4, 18-11: 34 000 times, hero lost)
                     s_wildId = 0;
                     return;
                 }

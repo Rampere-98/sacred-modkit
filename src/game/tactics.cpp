@@ -562,6 +562,14 @@ namespace
             LOG("Tactics: no art selected (engine art {:x})", art);
             return false;
         }
+        // The Vampiress's 404/405 crash the game 1-3 s after the cast (c0000094 at Sacred.exe+0xE1C66, a zero distance
+        // in the art's own effect, not the cast: A6, 27 crashes on 2026-11-18 with the spot guard above in). Never sent
+        // until the divisor's source is read from a dump.
+        if (art == 0x404 || art == 0x405)
+        {
+            LOG("Tactics: art {:x} not sent (it crashes the game a moment after: c0000094 at +0xE1C66)", art);
+            return false;
+        }
         ArtOrder order;
         order.target = target;
         order.position = at<uint16_t>(at_, kPosition);
