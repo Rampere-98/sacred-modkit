@@ -6122,7 +6122,7 @@ namespace
                     const uint32_t side = o ? *reinterpret_cast<const uint32_t*>(o + 0x1F0) : 0;   // 1 the hero's, 4 horses, 6 animals
                     if (!o || *reinterpret_cast<const uint32_t*>(o) < 0x880000 || *reinterpret_cast<const uint32_t*>(o) >= 0x8A0000 ||
                         (*reinterpret_cast<const uint32_t*>(o + 0xC) & 0xFFFF) != static_cast<uint32_t>(it - first) ||
-                        *(o + 0x24) != heroLayer || !reinterpret_cast<cObject*>(const_cast<uint8_t*>(o))->asCreature() ||
+                        !reinterpret_cast<cObject*>(const_cast<uint8_t*>(o))->asCreature() ||
                         *reinterpret_cast<const int32_t*>(o + 0x4D8) <= 0 || side == 1 || side == 4 || side == 6)
                     {
                         continue;
@@ -6306,7 +6306,13 @@ namespace
                     // A quest to take or a report to make, yellow or grey: the yellow ones are the main quest's (seen live
                     // 2026-11-09: the only yellow sign was the Vampiress's main quest giver), the grey ones the side quests
                     // (up to 7 in a town, never spoken to: the player saw no side quest taken).
-                    if (*(o + 0x24) == heroLayer &&
+                    // One on the other layer (a floor up, inside a house) within 30 tiles too: a click on it sends the hero
+                    // there by the game's own path through the doors, as for a merchant in a house (the quests study,
+                    // 2026-11-23: the givers of 15001 and 15029 stand on layer 1, DefPos «3216,2513,0,1», and were never
+                    // seen from the street).
+                    if ((*(o + 0x24) == heroLayer ||
+                         std::hypot(*reinterpret_cast<const int32_t*>(o + 0x1C) - heroX,
+                                    *reinterpret_cast<const int32_t*>(o + 0x20) - heroY) < 30.0 * kTileSize) &&
                         (glyph == MapMemory::Glyph::Offer || glyph == MapMemory::Glyph::Report))
                     {
                         g_signs.push_back({glyph == MapMemory::Glyph::Offer ? GoalKind::Offer : GoalKind::Report,
