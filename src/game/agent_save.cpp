@@ -48,6 +48,7 @@ namespace
     bool g_loadedOnce = false;
     DWORD g_inGameSince = 0;
     bool g_saveWanted = false;
+    bool g_periodicSave = false;   // the save wanted is the 10-minute one only (no quest, level, visit or restart asked)
     bool g_restartSave = false; // the save wanted is the one before a restart (a fight's end and half health do)
     bool g_diedSince = false;   // died since the last save or load: no save
     int g_deathsSinceSave = 0;  // deaths since the slot was last written (kept across its loads)
@@ -244,13 +245,15 @@ namespace
         {
             return false;
         }
-        if (!MoveFileExW(g_path.c_str(), bad.c_str(), MOVEFILE_REPLACE_EXISTING) || !CopyFileW(backup.c_str(), g_path.c_str(), FALSE))
+        if (!MoveFileExW(g_path.c_str(), bad.c_str(), MOVEFILE_REPLACE_EXISTING) || !MoveFileExW(backup.c_str(), g_path.c_str(), MOVEFILE_REPLACE_EXISTING))
         {
             LOG("AgentSave: the save before the last could not be put back (error {})", GetLastError());
             return false;
         }
         s_restoredAt = now;
-        g_deathsSinceSave = 0;
+        // The deaths go on counting from the backup (the agent study, 2026-11-24: A6 died every 6 min in one pocket, each
+        // restore zeroing the count and the .BAK never used up, so the 10 that set a save aside never came in 4 h):
+        // the backup is used once (moved, not copied) and 10 deaths since the last save set the hero aside as always.
         LOG("AgentSave: three deaths from one save: the save before it is the slot's again (the bad one kept as GAME{:02d}.BAD)",
             g_slot);
         return true;
@@ -313,6 +316,7 @@ void AgentSave::questDone()
         return;
     }
     g_saveWanted = true;
+    g_periodicSave = false;
 }
 
 namespace
@@ -522,6 +526,7 @@ void AgentSave::onFrame()
             {
                 LOG("AgentSave: 10 minutes played: a save is due");
                 g_saveWanted = true;
+                g_periodicSave = true;
             }
         }
     }
@@ -541,6 +546,7 @@ void AgentSave::onFrame()
         if (!g_flagPath.empty() && DeleteFileW(g_flagPath.c_str()))
         {
             g_saveWanted = true;
+            g_periodicSave = false;
             g_restartSave = true;
             LOG("AgentSave: a restart is coming: a save due");
         }
@@ -745,6 +751,15 @@ void AgentSave::onFrame()
     // 35 of the 80 deaths of A1, A3, A6 and A8 came within 4 min of the previous one): the merchant first, the save
     // after, or at the latest 10 min after it was wanted.
     // With two potions or fewer too (A7 had two at 21:58:36).
+    // The 10-minute save not at all then, nor once the merchant trip is put off (the agent study, 2026-11-24: A6 saved
+    // dry at 00:10:13, the instant «no trip for 10 min» lifted the wait, and every load after was dry in the pocket).
+    if (g_periodicSave && !g_restartSave && Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2)
+    {
+        LOG("AgentSave: the 10-minute save dropped (two healing potions or fewer: the merchant first)");
+        g_saveWanted = false;
+        g_periodicSave = false;
+        return;
+    }
     if (!g_restartSave && now - s_wantedSince < 600000 && Gear::healingLeft() >= 0 && Gear::healingLeft() <= 2 &&
         Gear::wantsShop())
     {
@@ -876,9 +891,11 @@ void AgentSave::onFrame()
     {
         CopyFileW(g_path.c_str(), backup.c_str(), FALSE);
     }
-    LOG("AgentSave: {}: saving GAME{:02d} ({} of {} health)", g_restartSave ? "a restart coming" : "a quest done", g_slot,
+    LOG("AgentSave: {}: saving GAME{:02d} ({} of {} health)",
+        g_restartSave ? "a restart coming" : g_periodicSave ? "10 minutes played" : "a quest done", g_slot,
         health, hero->maxHealth);
     g_saveWanted = false;
+    g_periodicSave = false;
     g_restartSave = false;
     g_deathsSinceSave = 0;
     g_expAtSave = heroExperience(hero);

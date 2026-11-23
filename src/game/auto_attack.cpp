@@ -8420,7 +8420,14 @@ namespace
                 for (const auto& [mx, my] : MapMemory::merchantsNear(layer, remTx, remTy, 700))
                 {
                     const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(mx)) << 32) | static_cast<uint32_t>(my);
-                    if (const auto f = s_remFailedAt.find(key); f != s_remFailedAt.end() && now - f->second < 1800000)
+                    // A merchant left is his town left (the agent study, 2026-11-24: A6's eight remembered merchants were
+                    // mostly one town 600 tiles off, each tried 150 s and left in turn, the same unreachable way each time).
+                    const int cx = mx, cy = my;
+                    if (std::any_of(s_remFailedAt.begin(), s_remFailedAt.end(), [&](const auto& f) {
+                            const int fx = static_cast<int>(static_cast<uint32_t>(f.first >> 32));
+                            const int fy = static_cast<int>(static_cast<uint32_t>(f.first));
+                            return now - f.second < 1800000 && std::abs(fx - cx) <= 40 && std::abs(fy - cy) <= 40;
+                        }))
                     {
                         continue;
                     }
