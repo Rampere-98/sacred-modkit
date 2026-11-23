@@ -705,7 +705,13 @@ namespace
         {
             const uint32_t id = kFixedId | static_cast<uint32_t>(i);
             const uint8_t* record = fixedRecord(id);
-            if (std::memcmp(record + kFixedName, "VERSTECK", 9) != 0)
+            // And a quest's spot to click (the quests study, 2026-11-23: the quest scripts put «take<n>» records in this
+            // table, usable like a hiding place: take402 at 2142,2928, take1002, take1202's healing herb; the hero stood
+            // 6 min on 2142,2928 «with the journal not moving»: nothing there is an item, the spot is clicked).
+            const char* name = reinterpret_cast<const char*>(record + kFixedName);
+            const bool questSpot = std::memcmp(name, "take", 4) == 0 && name[4] >= '0' && name[4] <= '9' &&
+                                   *reinterpret_cast<const uint32_t*>(record + kFixedKind) == kFixedUsable;
+            if (std::memcmp(record + kFixedName, "VERSTECK", 9) != 0 && !questSpot)
             {
                 continue;
             }
