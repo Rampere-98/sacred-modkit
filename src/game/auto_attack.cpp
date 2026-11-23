@@ -3913,6 +3913,16 @@ namespace
         int32_t x, y;
     };
     std::vector<Sign> g_signs;
+    // Givers come to whose sign was not seen (the owner's GAME02 against the copies, 2026-11-23: 1403, 1202, 15001 and
+    // 15029 never taken; A5 came to 1403's giver at 2399,2134 and went on): the creature standing at the giver's tile
+    // is spoken to as a player who knows him does, as a sign of its own for 2 min; once a creature each 10 min.
+    struct GiverTalk
+    {
+        int32_t number, tx, ty;
+        DWORD since;
+    };
+    std::vector<GiverTalk> g_giverTalks;
+    std::unordered_map<uint32_t, DWORD> g_giverSpokenAt;
 
     constexpr double kSignRange = 150.0;                    // tiles: farther quest signs are not goals
     bool goalBlocked(int32_t x, int32_t y, DWORD now);     // travel gave up on it for now
@@ -4844,7 +4854,9 @@ namespace
                     }
                 }
             }
-            static constexpr std::pair<int32_t, int32_t> kAfter[] = {{rq(6, 2), rq(12, 2)}, {10259, 15015}};
+            // Moca (R13NQ01) after Goods Messenger (R13NQ03): the owner did it (GAME02, 2026-11-23), held in all 8 copies.
+            static constexpr std::pair<int32_t, int32_t> kAfter[] = {
+                {rq(6, 2), rq(12, 2)}, {10259, 15015}, {rq(13, 1), rq(13, 3)}};
             for (QuestGoal& g : g_questBook)
             {
                 for (const auto& [quest, first] : kAfter)
@@ -5117,8 +5129,16 @@ namespace
                     if (off < 20.0)
                     {
                         s_visited.push_back(q.number);
-                        LOG("AutoAttack: the giver of quest {} at tile {},{} come to: its sign, if shown, is spoken to",
-                            q.number, q.x, q.y);
+                        const bool signed_ = std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
+                            return o.kind == GoalKind::Offer &&
+                                   std::hypot(o.x / kTileSize - (q.x + 0.5), o.y / kTileSize - (q.y + 0.5)) < 20.0;
+                        });
+                        if (!signed_)
+                        {
+                            g_giverTalks.push_back({q.number, q.x, q.y, now ? now : 1});
+                        }
+                        LOG("AutoAttack: the giver of quest {} at tile {},{} come to: {}", q.number, q.x, q.y,
+                            signed_ ? "its sign is spoken to" : "no sign seen: the one at its tile spoken to");
                     }
                     else
                     {
@@ -5320,6 +5340,14 @@ namespace
         for (QuestGoal& g : g_questBook)
         {
             g.band = !g.blocked && g.rank < kOrderCount && inLevelBand(g.rank, heroLevel);
+            // A quest taken whose level is under the band: the band's too, cheap and safe for the hero (the owner's
+            // GAME02 against the copies, 2026-11-23: 402 and 1405 open in all 8, never picked: «the level band's cheaper
+            // one first» every pass, the hero at 36-38 and they at 7-12 and 18-31).
+            if (!g.band && !g.blocked && g.kind == GoalKind::Journal && g.rank < kOrderCount && heroLevel > 0 &&
+                kQuestOrder[g.rank].level > 0 && kQuestOrder[g.rank].level < heroLevel - kBandBelow)
+            {
+                g.band = true;
+            }
             if (g.band && g.kind != GoalKind::Journal && g.number > 0)
             {
                 const QuestGiver* mine = nullptr;
@@ -6076,6 +6104,57 @@ namespace
         }
         g_questMarksAt = now;
         g_signs.clear();
+        // The givers to speak to with no sign (g_giverTalks): the living creature, not of the hero's side nor a horse or an animal, nearest the
+        // giver's tile within 3 tiles on the hero's layer, as an offer's sign for 2 min.
+        std::erase_if(g_giverTalks, [now](const GiverTalk& t) { return now - t.since > 120000; });
+        if (!g_giverTalks.empty())
+        {
+            const auto om = *reinterpret_cast<const uint8_t* const*>(0xAD5C40);
+            const auto first = om ? *reinterpret_cast<const uint8_t* const* const*>(om + 4) : nullptr;
+            const auto last = om ? *reinterpret_cast<const uint8_t* const* const*>(om + 8) : nullptr;
+            for (const GiverTalk& t : g_giverTalks)
+            {
+                const uint8_t* best = nullptr;
+                double bestOff = 3.0;
+                for (const uint8_t* const* it = first; first && last > first && last - first < 0x40000 && it < last; ++it)
+                {
+                    const uint8_t* o = *it;
+                    const uint32_t side = o ? *reinterpret_cast<const uint32_t*>(o + 0x1F0) : 0;   // 1 the hero's, 4 horses, 6 animals
+                    if (!o || *reinterpret_cast<const uint32_t*>(o) < 0x880000 || *reinterpret_cast<const uint32_t*>(o) >= 0x8A0000 ||
+                        (*reinterpret_cast<const uint32_t*>(o + 0xC) & 0xFFFF) != static_cast<uint32_t>(it - first) ||
+                        *(o + 0x24) != heroLayer || !reinterpret_cast<cObject*>(const_cast<uint8_t*>(o))->asCreature() ||
+                        *reinterpret_cast<const int32_t*>(o + 0x4D8) <= 0 || side == 1 || side == 4 || side == 6)
+                    {
+                        continue;
+                    }
+                    const double off = std::hypot(*reinterpret_cast<const int32_t*>(o + 0x1C) / kTileSize - (t.tx + 0.5),
+                                                  *reinterpret_cast<const int32_t*>(o + 0x20) / kTileSize - (t.ty + 0.5));
+                    if (off < bestOff)
+                    {
+                        best = o;
+                        bestOff = off;
+                    }
+                }
+                const uint32_t id = best ? *reinterpret_cast<const uint32_t*>(best + 0xC) : 0;
+                if (!id)
+                {
+                    continue;
+                }
+                const auto spoken = g_giverSpokenAt.find(id);
+                if (spoken != g_giverSpokenAt.end() && spoken->second != t.since && now - spoken->second < 600000)
+                {
+                    continue;   // spoken to for another giver's visit in the last 10 min
+                }
+                if (spoken == g_giverSpokenAt.end() || spoken->second != t.since)
+                {
+                    g_giverSpokenAt[id] = t.since;
+                    LOG("AutoAttack: quest {}: {:x} at the giver's tile {},{} spoken to (no sign seen)", t.number, id, t.tx,
+                        t.ty);
+                }
+                g_signs.push_back({GoalKind::Offer, id, *reinterpret_cast<const int32_t*>(best + 0x1C),
+                                   *reinterpret_cast<const int32_t*>(best + 0x20)});
+            }
+        }
         std::vector<MapMemory::QuestMark> marks;
         g_merchants.clear();
         g_masters.clear();
