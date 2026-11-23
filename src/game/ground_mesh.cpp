@@ -360,9 +360,15 @@ namespace
             }
             if (DDraw9::Surface::replaced(surface))
             {
-                // [Textures] Replace: the cells hold the original size; the game's own ground path draws the replacement.
-                LOG("Ground mesh: a ground texture has a replacement in SacredBild\\textures");
-                return Build::Unsupported;
+                // [Textures] Replace: the cells hold the original's pixels, so the ground keeps its original texture and
+                // the mesh stays on (2026-11-23, the owner: «solo 60 FPS con la cámara cercana»: one replaced ground
+                // texture turned the mesh off for the session and every tile was drawn on its own when zoomed out).
+                static bool s_told = false;
+                if (!s_told)
+                {
+                    s_told = true;
+                    LOG("Ground mesh: ground textures with a replacement drawn with their original (the mesh kept on)");
+                }
             }
             AtlasPage* page = nullptr;
             for (AtlasPage& p : g.pages)
