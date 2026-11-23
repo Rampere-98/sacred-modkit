@@ -687,6 +687,8 @@ namespace
         return id == g_target;
     }
 
+    bool questGoalNear(int32_t x, int32_t y, double tiles);     // a goal of the journal within that many tiles
+
     // Magic hiding places (VERSTECK) have no picture and are not in the pick list: the cursor finds them by the tile
     // under it, shows the hand and their name. Gone for by their record's tile, within LootRange / 40 tiles (about
     // the screen pixels LootRange stands for) on either axis.
@@ -705,18 +707,26 @@ namespace
         {
             const uint32_t id = kFixedId | static_cast<uint32_t>(i);
             const uint8_t* record = fixedRecord(id);
-            // And a quest's spot to click (the quests study, 2026-11-23: the quest scripts put «take<n>» records in this
-            // table, usable like a hiding place: take402 at 2142,2928, take1002, take1202's healing herb; the hero stood
-            // 6 min on 2142,2928 «with the journal not moving»: nothing there is an item, the spot is clicked).
+            // And a quest's spot to click (the quests study, 2026-11-23: the quest scripts put usable records in this
+            // table, clicked like a hiding place: take402 at 2142,2928, take1002 and ding1002, take1202's healing herb,
+            // take2301, postchange2201, ot_saeure5003, ot_wurzkraut (7615), ot_nimmt_flamme (53), We_ek_* (55); the hero
+            // stood 6 min on 2142,2928 «with the journal not moving»). Only with a goal of the journal within 15 tiles:
+            // clicked before the quest is taken it would do nothing and be marked done for good.
             const char* name = reinterpret_cast<const char*>(record + kFixedName);
-            const bool questSpot = std::memcmp(name, "take", 4) == 0 && name[4] >= '0' && name[4] <= '9' &&
-                                   *reinterpret_cast<const uint32_t*>(record + kFixedKind) == kFixedUsable;
+            const bool questName = std::memcmp(name, "take", 4) == 0 || std::memcmp(name, "ding", 4) == 0 ||
+                                   std::memcmp(name, "ot_", 3) == 0 || std::memcmp(name, "postchange", 10) == 0 ||
+                                   std::memcmp(name, "We_ek_", 6) == 0;
+            const bool questSpot = questName && *reinterpret_cast<const uint32_t*>(record + kFixedKind) == kFixedUsable;
             if (std::memcmp(record + kFixedName, "VERSTECK", 9) != 0 && !questSpot)
             {
                 continue;
             }
             int32_t x = 0, y = 0;
             fixedPosition(id, x, y);
+            if (questSpot && !questGoalNear(x, y, 15.0))
+            {
+                continue;
+            }
             const double dx = x - hero->x, dy = y - hero->y;
             if (std::abs(dx) > reach || std::abs(dy) > reach || dx * dx + dy * dy >= best || !lootNear(x, y) ||
                 lootBlocked(id, GetTickCount()) || g_lootDone.count(lootKey(id)))
@@ -3907,6 +3917,13 @@ namespace
         return best > 0x7FFFFFFF ? 0x7FFFFFFF : static_cast<int32_t>(best);
     }
     std::vector<QuestGoal> g_questBook;     // rebuilt by questTarget, nearest first
+
+    bool questGoalNear(int32_t x, int32_t y, double tiles)
+    {
+        return std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& g) {
+            return std::hypot(static_cast<double>(g.x - x), static_cast<double>(g.y - y)) < tiles * kTileSize;
+        });
+    }
     int g_questsDone = 0, g_questsFailed = 0;
     std::vector<int32_t> g_doneNumbers;     // the journal's quests done (record +0x08), at its last read
     DWORD g_questsDoneAt = 0;           // when the count of quests done last changed
