@@ -47,5 +47,8 @@ namespace AgentSave
         std::time_t at;
     };
     void noteDeathSpot(int x, int y);
-    bool nearDeathSpot(int x, int y);   // within 20 tiles of one
+    // Within 20 tiles of one; stuckToo: a place the hero stuck in 5 min (counted as a death) too, shunned 30 min.
+    bool nearDeathSpot(int x, int y, bool stuckToo = true);
+    // The last death counted was a stuck, not a fight lost (its place is shunned by AgentSave itself).
+    bool lastDeathWasStuck();
 }

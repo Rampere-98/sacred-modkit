@@ -8795,7 +8795,10 @@ namespace
             const DWORD tick = GetTickCount();
             if (static_cast<int>(tick - s_shunUntil) < 0 ||
                 nearDeathSpot(static_cast<int>(x / kTileSize), static_cast<int>(y / kTileSize)) ||
-                nearDeathSpot(static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize)))
+                // The hero's own place: a fight lost only (one loaded beside the place it stuck in is to leave it).
+                AgentSave::nearDeathSpot(static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize),
+                                         false) ||
+                nearDangerGroup(static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize)))
             {
                 if (static_cast<int>(tick - s_shunUntil) >= 0)
                 {
@@ -11595,7 +11598,14 @@ void AutoAttack::onFrame()
         {
             s_deaths = AgentSave::deathsSinceSave();
         }
-        if (AgentSave::deathsSinceSave() > s_deaths)
+        if (AgentSave::deathsSinceSave() > s_deaths && AgentSave::lastDeathWasStuck())
+        {
+            // A stuck counted as a death: no fight lost, so neither the farming zone nor the last fight's place is
+            // shunned (AgentSave shuns the place it stuck in); the quests after the load are not held for it.
+            LOG("AutoAttack: a stuck counted as a death: only the place it stuck in shunned, not the fights' places");
+            g_farmSector = -1;
+        }
+        else if (AgentSave::deathsSinceSave() > s_deaths)
         {
             if (g_farmKnown)
             {

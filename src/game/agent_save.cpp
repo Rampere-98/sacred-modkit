@@ -51,6 +51,12 @@ namespace
     bool g_restartSave = false; // the save wanted is the one before a restart (a fight's end and half health do)
     bool g_diedSince = false;   // died since the last save or load: no save
     int g_deathsSinceSave = 0;  // deaths since the slot was last written (kept across its loads)
+    int32_t g_expAtSave = -1;   // the hero's experience at the last save or load (-1: taken in game next)
+    // The hero's experience (its stats at +0x3A8, the experience 0x0C in: CombatLearn's kExperience).
+    int32_t heroExperience(const cCreature* hero)
+    {
+        return *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(hero) + 0x3A8 + 0x0C);
+    }
     int32_t g_lastHealth = 1;
     DWORD g_actionAt = 0;       // the last save or load asked for
     bool g_actionSave = false;
@@ -66,6 +72,11 @@ namespace
     std::wstring g_deathsPath;
     std::wstring g_flagPath;    // SacredBild-save-now: the install asks for a save before a restart
     std::vector<AgentSave::DeathSpot> g_spots;
+    // Places the hero stuck in (tiles), apart from the fights lost (the agent study, 2026-11-23: a stuck noted the
+    // farming zone and the last fight's place as deaths, the saved spot beside them, so every quest after the load was
+    // «where the hero died lately» and A6 farmed the same pocket 6.8 h). In memory only, 30 min each.
+    std::vector<AgentSave::DeathSpot> g_stuckSpots;
+    bool g_lastDeathStuck = false;
 
     void writeDeaths()
     {
@@ -273,6 +284,7 @@ namespace
     {
         LOG("AgentSave: {}: loading GAME{:02d}", why, g_slot);
         ++g_loads;
+        g_expAtSave = -1;
         g_sub = 1;
         g_actionAt = now;
         g_actionSave = false;
@@ -451,6 +463,7 @@ bool AgentSave::loadFromMenu()
     PostMessageW(window, 0x8002, 1, static_cast<LPARAM>(g_slot));
     g_loadedOnce = true;
     ++g_loads;
+    g_expAtSave = -1;
     g_sub = 1;
     g_actionAt = GetTickCount();
     g_actionSave = false;
@@ -495,7 +508,17 @@ void AgentSave::onFrame()
         if (const DWORD now = GetTickCount(); now - s_periodAt > 600000)
         {
             s_periodAt = now;
-            if (!g_saveWanted)
+            // Only with experience gained since the last save or load (the agent study, 2026-11-23: A6 6.8 h in one
+            // pocket, 13 stuck loads, each 10-min save writing the pocket again and zeroing the deaths, so nothing ever
+            // climbed). A quest, a level or a visit still saves at once.
+            cObjectManager* om = cObjectManager::instance();
+            const cCreature* h = om ? om->hero() : nullptr;
+            const int32_t gained = h ? heroExperience(h) : -1;
+            if (!g_saveWanted && gained >= 0 && g_expAtSave >= 0 && gained <= g_expAtSave)
+            {
+                LOG("AgentSave: 10 minutes played, no experience gained since the last save or load: not saved");
+            }
+            else if (!g_saveWanted)
             {
                 LOG("AgentSave: 10 minutes played: a save is due");
                 g_saveWanted = true;
@@ -536,6 +559,10 @@ void AgentSave::onFrame()
     if (!g_inGameSince)
     {
         g_inGameSince = now;
+        if (g_expAtSave < 0)
+        {
+            g_expAtSave = heroExperience(hero);
+        }
         g_lastHealth = hero->health;
     }
     // The copy's own game, once in a game at start (a new one begun by AutoStart, then the saved one loaded over it).
@@ -607,7 +634,10 @@ void AgentSave::onFrame()
         // (AutoAttack notes the spot on the count going up) and 10 of them set the save aside. CombatLearn is not
         // told: no fight was lost.
         ++g_deathsSinceSave;
-        LOG("AgentSave: stuck 5 min: counted as death {} since the last save", g_deathsSinceSave);
+        g_lastDeathStuck = true;
+        g_stuckSpots.push_back({tx, ty, std::time(nullptr)});
+        LOG("AgentSave: stuck 5 min: counted as death {} since the last save (tile {},{} shunned 30 min)", g_deathsSinceSave,
+            tx, ty);
         if (g_deathsSinceSave >= 10)
         {
             setAside();
@@ -644,6 +674,7 @@ void AgentSave::onFrame()
         if (slotFileExists())
         {
             ++g_deathsSinceSave;
+            g_lastDeathStuck = false;
             LOG("AgentSave: death {} since the last save", g_deathsSinceSave);
             if (g_deathsSinceSave >= 3 && restoreBackup())
             {
@@ -850,6 +881,7 @@ void AgentSave::onFrame()
     g_saveWanted = false;
     g_restartSave = false;
     g_deathsSinceSave = 0;
+    g_expAtSave = heroExperience(hero);
     writeDeaths();
     g_sub = 2;
     ++g_generation;
@@ -871,8 +903,23 @@ void AgentSave::noteDeathSpot(int x, int y)
     writeDeaths();
 }
 
-bool AgentSave::nearDeathSpot(int x, int y)
+bool AgentSave::lastDeathWasStuck()
 {
+    return g_lastDeathStuck;
+}
+
+bool AgentSave::nearDeathSpot(int x, int y, bool stuckToo)
+{
+    if (stuckToo)
+    {
+        const std::time_t at = std::time(nullptr);
+        std::erase_if(g_stuckSpots, [at](const DeathSpot& d) { return at - d.at >= 1800; });
+        if (std::any_of(g_stuckSpots.begin(), g_stuckSpots.end(),
+                        [&](const DeathSpot& d) { return (x - d.x) * (x - d.x) + (y - d.y) * (y - d.y) < 400; }))
+        {
+            return true;
+        }
+    }
     // Died there again and again (the live verifier, 2026-11-11: A3 back at 3223,2664 each time the 30 min ran out,
     // dead there since 07:50): shunned 30 min after one death, 60 after two, 120 after three, 240 after more.
     const std::time_t now = std::time(nullptr);
