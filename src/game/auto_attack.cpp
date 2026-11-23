@@ -727,6 +727,16 @@ namespace
             {
                 continue;
             }
+            if (questSpot)
+            {
+                static uint32_t s_told = 0;
+                if (s_told != id)
+                {
+                    s_told = id;
+                    LOG("AutoAttack: quest spot {} at tile {},{}: to be clicked", name, static_cast<int>(x / kFixedTile),
+                        static_cast<int>(y / kFixedTile));
+                }
+            }
             const double dx = x - hero->x, dy = y - hero->y;
             if (std::abs(dx) > reach || std::abs(dy) > reach || dx * dx + dy * dy >= best || !lootNear(x, y) ||
                 lootBlocked(id, GetTickCount()) || g_lootDone.count(lootKey(id)))
@@ -3920,8 +3930,10 @@ namespace
 
     bool questGoalNear(int32_t x, int32_t y, double tiles)
     {
+        // The journal's goals only: a giver's offer near a spot would have it clicked before the quest is taken.
         return std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& g) {
-            return std::hypot(static_cast<double>(g.x - x), static_cast<double>(g.y - y)) < tiles * kTileSize;
+            return g.kind == GoalKind::Journal &&
+                   std::hypot(static_cast<double>(g.x - x), static_cast<double>(g.y - y)) < tiles * kTileSize;
         });
     }
     int g_questsDone = 0, g_questsFailed = 0;
@@ -6142,11 +6154,17 @@ namespace
                 for (const uint8_t* const* it = first; first && last > first && last - first < 0x40000 && it < last; ++it)
                 {
                     const uint8_t* o = *it;
-                    const uint32_t side = o ? *reinterpret_cast<const uint32_t*>(o + 0x1F0) : 0;   // 1 the hero's, 4 horses, 6 animals
+                    // The side read only once the entry is known to be a creature (A8, 2026-11-23: three crashes at
+                    // DDRAW.dll+47694 in 17 min, the side read first from an entry that was no object, past its page).
                     if (!o || *reinterpret_cast<const uint32_t*>(o) < 0x880000 || *reinterpret_cast<const uint32_t*>(o) >= 0x8A0000 ||
                         (*reinterpret_cast<const uint32_t*>(o + 0xC) & 0xFFFF) != static_cast<uint32_t>(it - first) ||
                         !reinterpret_cast<cObject*>(const_cast<uint8_t*>(o))->asCreature() ||
-                        *reinterpret_cast<const int32_t*>(o + 0x4D8) <= 0 || side == 1 || side == 4 || side == 6)
+                        *reinterpret_cast<const int32_t*>(o + 0x4D8) <= 0)
+                    {
+                        continue;
+                    }
+                    const uint32_t side = *reinterpret_cast<const uint32_t*>(o + 0x1F0);   // 1 the hero's, 4 horses, 6 animals
+                    if (side == 1 || side == 4 || side == 6)
                     {
                         continue;
                     }
