@@ -3842,6 +3842,7 @@ namespace
         double way = 0.0;           // the way's length to it (world units), with none of the weights on distance
         bool band = false;          // in the hero's level band and not chained after an undone one (questTarget)
         double cost = 0.0;          // in the band: tiles of way + 15 a place after the band's first in the order
+        int book = -1;              // journal goals: its place in the quest book (chapter tab, then record), -1 none
     };
 
     // The quest's number: DQ_<n> is n; R<rr>NQ<qq> is 100*rr + qq, but region 1's are 150 + qq (the journal's own
@@ -4481,6 +4482,12 @@ namespace
                     why = "its giver not among the goals this pass";
                 }
             }
+            if (front && front->book >= 0 && !front->blocked &&
+                (goal == g_questBook.end() || (goal->book < 0 && !goal->blocked) || goal->book > front->book) &&
+                !why.starts_with("held") && !why.starts_with("not on offer") && !why.starts_with("no giver"))
+            {
+                why = "a quest taken goes first (the book's order, page 1 on, top to bottom)";
+            }
             DWORD& told = s_told[n];
             if (logged < 8 && (!told || now - told > 1800000))
             {
@@ -4886,6 +4893,10 @@ namespace
                 g.number = *reinterpret_cast<const int32_t*>(r + 0x08);
                 g.minutesLeft = deadlineLeft(g.number);
                 g.tier = g.minutesLeft > 0 ? 2 : questPriority(g.number);
+                // The book's order (Manolito, block BW: 0x6B07E0 lists tab by tab, max(u16 +0x16C, 1) - 1, each in the
+                // records' order): page 1 on, top to bottom, as the owner reads it.
+                g.book = (std::max<int>(*reinterpret_cast<const uint16_t*>(r + 0x16C), 1) - 1) * 1024 +
+                         static_cast<int>((r - begin) / kRecord);
                 g_questBook.push_back(g);
             }
             // A quest left for last because it breaks another (docs/QUESTS.md, «Reglas para el agente»: Boris
@@ -5378,6 +5389,17 @@ namespace
                     g.blocked = true;
                 }
             }
+            // A quest taken goes before those not taken, in the book's order, only while the hero is fit for its step
+            // (the owner, 2026-11-24: «el objetivo principal siempre serán las misiones, pero no se pueden hacer sin
+            // fortificarse antes»): its ground more than 2 levels over the hero, or skipped a while, it waits as before.
+            if (g.book >= 0 &&
+                (orderSkipped(g.number, now) ||
+                 (world && heroLevel > 0 && !g.main &&
+                  sectorLevels(world, static_cast<int>(g.x / kTileSize), static_cast<int>(g.y / kTileSize), lo, hi) &&
+                  lo > heroLevel + 2)))
+            {
+                g.book = -1;
+            }
             // A quest done at once on offer (its sign at its giver): not taken while the hero is under its ground's
             // level, as it would have to be done there and then.
             if (g.kind == GoalKind::Offer && doneAtOnce(g.number) && heroLevel > 0)
@@ -5483,6 +5505,16 @@ namespace
             if (a.tier == 2 && a.minutesLeft != b.minutesLeft)
             {
                 return a.minutesLeft < b.minutesLeft;
+            }
+            // The quests taken first, in the book's order: done before more are taken from givers far off (those near are
+            // taken on the way).
+            if ((a.book >= 0) != (b.book >= 0))
+            {
+                return a.book >= 0;
+            }
+            if (a.book >= 0 && a.book != b.book)
+            {
+                return a.book < b.book;
             }
             if (a.band != b.band)
             {
