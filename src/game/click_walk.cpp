@@ -523,20 +523,36 @@ namespace
                     (byNet == RouteNet::Trip::None && MapMemory::routeWideAsync(g_grid.layer, start.x, start.y, goal.x, goal.y, wide)))
                 {
                     Cell stop = start;
-                    for (const auto& [x, y] : wide)
+                    size_t stopAt = 0;
+                    for (size_t k = 0; k < wide.size(); ++k)
                     {
+                        const auto [x, y] = wide[k];
                         if (nearEdge(x, y) || !g_grid.walkable(x, y))
                         {
                             break;
                         }
                         stop = {x, y};
+                        stopAt = k;
                     }
                     if (chebyshev(stop, start.x, start.y) >= 4)
                     {
                         LOG("Click walk: no way inside the grid to {},{}: along the wide route as far as {},{} ({} route tiles)",
                             goal.x, goal.y, stop.x, stop.y, static_cast<int>(wide.size()));
                         s_inFallback = true;
-                        const bool ok = planUnguarded(start, stop);
+                        bool ok = planUnguarded(start, stop);
+                        // The stop not reached inside the grid (the stuck solver, 2026-11-24: A6 in a valley at 3152,1783,
+                        // the wide route's stop behind a ridge, «NO plan» and the 30-tile straight order into the
+                        // mountain every 20 s, the stop never told): told, and the route's halfway point tried once.
+                        if (!ok && stopAt >= 8)
+                        {
+                            const auto [hx, hy] = wide[stopAt / 2];
+                            LOG("Click walk: the wide route's stop {},{} has no way inside the grid: its halfway point {},{} tried",
+                                stop.x, stop.y, hx, hy);
+                            if (chebyshev(Cell{hx, hy}, start.x, start.y) >= 4)
+                            {
+                                ok = planUnguarded(start, Cell{hx, hy});
+                            }
+                        }
                         s_inFallback = false;
                         if (ok)
                         {
