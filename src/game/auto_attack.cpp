@@ -5640,6 +5640,8 @@ namespace
             };
             static std::unordered_map<uint64_t, Detour> s_detours;
             static uint64_t s_on = 0;
+            static QuestGoal s_onLast{};    // the goal on the way as last seen in the book
+            static DWORD s_goneSince = 0;   // out of the book since (0: in it)
             const auto keyOf = [](const QuestGoal& o) {
                 const uint32_t id = o.number > 0 ? static_cast<uint32_t>(o.number)
                                                  : (o.who ^ static_cast<uint32_t>(o.x) ^ (static_cast<uint32_t>(o.y) << 7)) |
@@ -5700,7 +5702,28 @@ namespace
                 const auto on = std::find_if(g_questBook.begin(), g_questBook.end(),
                                              [&](const QuestGoal& o) { return keyOf(o) == s_on; });
                 Detour& d = s_detours[s_on];
-                const std::string whyOver = on == g_questBook.end() ? std::string("its step done or gone") : unfit(*on, 60.0);
+                // Out of the book a moment: kept 10 s on toward where it was (A4, 2026-11-24 18:49-18:52: offer 15060 at
+                // 27-30 tiles picked and «over, its step done or gone» 7 times in 3 min, each flip cutting the walk; a
+                // giver at the edge of sight comes and goes from the goals).
+                const QuestGoal* cur = nullptr;
+                if (on != g_questBook.end())
+                {
+                    s_onLast = *on;
+                    s_goneSince = 0;
+                    cur = &*on;
+                }
+                else
+                {
+                    if (!s_goneSince)
+                    {
+                        s_goneSince = now ? now : 1;
+                    }
+                    if (now - s_goneSince < 10000)
+                    {
+                        cur = &s_onLast;
+                    }
+                }
+                const std::string whyOver = !cur ? std::string("its step done or gone") : unfit(*cur, 60.0);
                 if (!whyOver.empty())
                 {
                     LOG("AutoAttack: on the way: {} over ({}, after {} s): back to the order's {}",
@@ -5714,6 +5737,7 @@ namespace
                         d.until = now + 1800000;
                     }
                     s_on = 0;
+                    s_goneSince = 0;
                     cutWalkForDetour();
                 }
                 else
@@ -5728,13 +5752,14 @@ namespace
                         d.until = now + 1800000;
                         LOG("AutoAttack: on the way: {} {} given 5 min with its step not done: left 30 min, back to the "
                             "order's {}",
-                            kindName(*on), on->number, g.number);
+                            kindName(*cur), cur->number, g.number);
                         s_on = 0;
+                        s_goneSince = 0;
                         cutWalkForDetour();
                     }
                     else
                     {
-                        by = &*on;
+                        by = cur;
                     }
                 }
             }
@@ -5764,6 +5789,8 @@ namespace
                 if (best)
                 {
                     s_on = keyOf(*best);
+                    s_onLast = *best;
+                    s_goneSince = 0;
                     Detour& d = s_detours[s_on];
                     if (d.until && static_cast<int>(now - d.until) >= 0)
                     {
