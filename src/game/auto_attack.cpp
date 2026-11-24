@@ -7267,6 +7267,22 @@ namespace
         return ways;
     }
 
+    // Where to order a walk to step into a way out's tile (ex, ey) from the hero's (htx, hty): within 3 tiles, 1.5 tiles
+    // past its centre, away from the hero; else its centre. A walk ordered onto the tile itself stood 1.3 tiles short and
+    // never stepped in (Manolito's live samples, A4 2026-11-24: y 1423.8 for the cave 16.1's exit 5741,1422; the game's
+    // own walk, our hook passes short ones unchanged); ordered past it, the hero went through and the trigger jumped.
+    void aimThrough(int htx, int hty, int ex, int ey, int32_t& wx, int32_t& wy)
+    {
+        double tx = ex + 0.5, ty = ey + 0.5;
+        if (std::abs(ex - htx) <= 3 && std::abs(ey - hty) <= 3)
+        {
+            tx += 1.5 * ((ex > htx) - (ex < htx));
+            ty += 1.5 * ((ey > hty) - (ey < hty));
+        }
+        wx = static_cast<int32_t>(tx * kTileSize);
+        wy = static_cast<int32_t>(ty * kTileSize);
+    }
+
     // The tile 3 beyond a way out, toward the other end of the same door on layer 0 (the stuck solver, 2026-11-17, A4: shut in
     // 8 min in a merchant's house, layer 1, standing again and again on the doorway 3198,2799 whose outside end
     // 3199,2799 MapMemory had marked on layer 0; the layer flips only one step on, and the guard took «on the way out»
@@ -7354,7 +7370,9 @@ namespace
             if (!ClickWalk::routing() && now - s_askAt > 4000)
             {
                 s_askAt = now;
-                ClickWalk::walkTo(wx, wy, false);
+                int32_t ax = 0, ay = 0;
+                aimThrough(static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize), ex, ey, ax, ay);
+                ClickWalk::walkTo(ax, ay, false);
             }
             return true;
         }
@@ -7988,8 +8006,11 @@ namespace
                 s_wayTried[(static_cast<uint64_t>(static_cast<uint32_t>(bx)) << 32) | static_cast<uint32_t>(by)] = now;
                 LOG("AutoAttack: stuck guard: shut in: to the way out at {},{} ({:.0f} tiles)", bx, by, best);
                 Findings::note("stuck", self->x, self->y, "shut in: to the way out at {},{}", bx, by);
-                ClickWalk::walkTo(static_cast<int32_t>((bx + 0.5) * kTileSize), static_cast<int32_t>((by + 0.5) * kTileSize),
-                                  false);
+                {
+                    int32_t ax = 0, ay = 0;
+                    aimThrough(static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize), bx, by, ax, ay);
+                    ClickWalk::walkTo(ax, ay, false);
+                }
                 g_wayOutX = static_cast<int32_t>((bx + 0.5) * kTileSize);
                 g_wayOutY = static_cast<int32_t>((by + 0.5) * kTileSize);
                 g_wayOutUntil = now + static_cast<DWORD>(std::min(45.0, 10.0 + best * 0.7) * 1000.0);
@@ -9526,18 +9547,9 @@ namespace
                             if (!ClickWalk::routing() && now - g_questAskAt > 4000)
                             {
                                 g_questAskAt = now;
-                                // Near it, aimed 1.5 tiles past it, through it: a walk ordered onto the tile itself
-                                // stood 1.3 tiles short (Manolito's live samples, A4 2026-11-24: y 1423.8 for the cave
-                                // 16.1's exit 5741,1422, never stepped in); the one ordered past it went through and
-                                // jumped. The game's path finder stops at the nearest it can reach beyond.
-                                double tx = ex + 0.5, ty = ey + 0.5;
-                                if (std::abs(ex - htx) <= 3 && std::abs(ey - hty) <= 3)
-                                {
-                                    tx += 1.5 * ((ex > htx) - (ex < htx));
-                                    ty += 1.5 * ((ey > hty) - (ey < hty));
-                                }
-                                ClickWalk::walkTo(static_cast<int32_t>(tx * kTileSize), static_cast<int32_t>(ty * kTileSize),
-                                                  false);
+                                int32_t ax = 0, ay = 0;
+                                aimThrough(htx, hty, ex, ey, ax, ay);
+                                ClickWalk::walkTo(ax, ay, false);
                             }
                             MapMemory::setRoute(true, static_cast<int32_t>((ex + 0.5) * kTileSize),
                                                 static_cast<int32_t>((ey + 0.5) * kTileSize));
