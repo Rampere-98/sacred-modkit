@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <format>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -55,6 +56,11 @@ namespace
         DWORD at = 0;
         bool ok = false;
         bool noWay = false;                       // the net holds nodes near both ends and no way between them
+        // The net reaches no node near the goal: the trip ends at the node it reaches nearest the goal (the edge of
+        // what the copies have walked), the old ways from there (A4, 2026-11-24: quests at 1493,1198 and 860,1296,
+        // 685 and 777 tiles past the net's last node, and the 30-tile straight order into the water by 2974,2614).
+        bool partial = false;
+        bool edgeTold = false;                    // its end reached, told once
         std::vector<std::pair<int, int>> points;  // the hero's start .. the goal
         size_t progress = 0;                      // the point nearest the hero last asked
         int tiles = 0;                            // the walk's length by the net
@@ -77,6 +83,8 @@ namespace
     constexpr DWORD kBudgetMs = 45000;  // 10 s gave every trip up live (A2-A8, 20:15: each stretch to a node 1.5-5 s on the low thread)
     constexpr int kStretchMargin = 24;
     constexpr int kOffTrip = 40;    // the hero this far from every point ahead: the trip is worked out again
+    constexpr int kPartialGain = 100;   // a partial trip only if its end is this much nearer the goal (tiles, larger axis)
+    constexpr int kPartialAt = 6;       // the hero this near a partial trip's end: the trip is done, the old ways on
 
     std::wstring netPath()
     {
@@ -280,7 +288,8 @@ namespace
     }
 
     // On the low thread: the trip from (fromX, fromY) to (toX, toY).
-    Kept work(int layer, int fromX, int fromY, int toX, int toY)
+    // `partialOk`: the trip walked (not a length asked for) may end short of the goal, at the edge of the net.
+    Kept work(int layer, int fromX, int fromY, int toX, int toY, bool partialOk)
     {
         const DWORD t0 = GetTickCount();
         Kept k;
@@ -306,8 +315,9 @@ namespace
             nearStart = nearNodes(layer, fromX, fromY);
             nearGoal = nearNodes(layer, goalX, goalY);
         }
-        // No node near one end: nothing to search for, the old ways at once.
-        if (nearStart.empty() || nearGoal.empty())
+        // No node near one end: nothing to search for, the old ways at once (with none near the goal, the walked trip
+        // may still go to the net's edge nearest it).
+        if (nearStart.empty() || (nearGoal.empty() && !partialOk))
         {
             LOG("RouteNet: trip {},{} to {},{} on layer {}: no node within {} tiles of the {}, {} ms", fromX, fromY, toX,
                 toY, layer, kReach, nearStart.empty() ? "hero" : "goal", GetTickCount() - t0);
@@ -319,7 +329,9 @@ namespace
         bool late = false;
         const DWORD deadline = t0 + kBudgetMs;
         std::vector<End> a = ends(nearStart, layer, fromX, fromY, true, triedA, deadline, late);
-        std::vector<End> b = a.empty() || late ? std::vector<End>{} : ends(nearGoal, layer, goalX, goalY, false, triedB, deadline, late);
+        std::vector<End> b = a.empty() || late || nearGoal.empty()
+                                 ? std::vector<End>{}
+                                 : ends(nearGoal, layer, goalX, goalY, false, triedB, deadline, late);
         if (late)
         {
             LOG("RouteNet: trip {},{} to {},{} on layer {}: given up after {} ms (the stretches to the nodes: {} tried near "
@@ -328,7 +340,7 @@ namespace
             k.at = GetTickCount();
             return k;
         }
-        if (a.empty() || b.empty())
+        if (a.empty() || (b.empty() && !partialOk))
         {
             LOG("RouteNet: trip {},{} to {},{} on layer {}: no node reached near the {} ({} within {} tiles, {} tried), {} ms",
                 fromX, fromY, toX, toY, layer, a.empty() ? "hero" : "goal", (a.empty() ? nearStart : nearGoal).size(),
@@ -387,13 +399,62 @@ namespace
                 }
             }
         }
+        bool partial = false;
         if (bestNode < 0)
         {
-            LOG("RouteNet: trip {},{} to {},{} on layer {}: the net has no way between the nodes near either end, {} ms",
-                fromX, fromY, toX, toY, layer, GetTickCount() - t0);
-            k.at = GetTickCount();
-            k.noWay = true;
-            return k;
+            // With no node near the goal reached (none there, or none joined to the hero's), the Dijkstra above ran
+            // over all the hero's part of the net (no goal node cut it short): its node nearest the goal, if that is
+            // well nearer than the hero.
+            k.noWay = !b.empty();
+            int nearest = INT32_MAX;
+            if (partialOk)
+            {
+                // Never an interior's node: the caves sit on layer 0 too, far off the surface (cave 16.1 at 5741,1421),
+                // and the nearest to an eastern goal could be one, the hero led into a pocket.
+                const auto inside = [](const Node& nd) {
+                    if (nd.name.starts_with("dentro"))
+                    {
+                        return true;
+                    }
+                    for (const Door& d : g_doors)
+                    {
+                        if (d.box && nd.x >= d.x0 && nd.x <= d.x1 && nd.y >= d.y0 && nd.y <= d.y1)
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                for (size_t v = 0; v < n; ++v)
+                {
+                    if (dist[v] == INT32_MAX || g_nodes[v].layer != layer)
+                    {
+                        continue;
+                    }
+                    const int d = cheb(g_nodes[v].x, g_nodes[v].y, goalX, goalY);
+                    if ((d < nearest || (d == nearest && dist[v] < best)) && !inside(g_nodes[v]))
+                    {
+                        nearest = d;
+                        best = dist[v];
+                        bestNode = static_cast<int>(v);
+                    }
+                }
+            }
+            const int heroOff = cheb(fromX, fromY, goalX, goalY);
+            if (bestNode < 0 || nearest > heroOff - kPartialGain)
+            {
+                LOG("RouteNet: trip {},{} to {},{} on layer {}: {}{}, {} ms", fromX, fromY, toX, toY, layer,
+                    b.empty() ? "no node near the goal reached" : "the net has no way between the nodes near either end",
+                    bestNode < 0 ? std::string() : std::format(" (its nearest node {} tiles off, the hero {})", nearest, heroOff),
+                    GetTickCount() - t0);
+                k.at = GetTickCount();
+                return k;
+            }
+            partial = true;
+            LOG("RouteNet: trip {},{} to {},{} on layer {}: {}: as far as the net's node {} at {},{}, {} tiles from the goal "
+                "(the hero {})", fromX, fromY, toX, toY, layer,
+                b.empty() ? "no node near the goal reached" : "the net has no way between the nodes near either end",
+                g_nodes[bestNode].name, g_nodes[bestNode].x, g_nodes[bestNode].y, nearest, heroOff);
         }
         std::vector<int> chain{bestNode};
         while (prev[chain.back()] >= 0)
@@ -441,11 +502,22 @@ namespace
                 }
             }
         }
-        addThinned(k.points, b[goalEnd[chain.back()]].cells, 6);
-        if (goalX != toX || goalY != toY)
+        if (partial)
         {
-            k.points.push_back({toX, toY});
+            if (k.points.empty() || k.points.back() != std::pair{g_nodes[chain.back()].x, g_nodes[chain.back()].y})
+            {
+                k.points.push_back({g_nodes[chain.back()].x, g_nodes[chain.back()].y});
+            }
         }
+        else
+        {
+            addThinned(k.points, b[goalEnd[chain.back()]].cells, 6);
+            if (goalX != toX || goalY != toY)
+            {
+                k.points.push_back({toX, toY});
+            }
+        }
+        k.partial = partial;
         k.ok = true;
         k.tiles = best / 10;
         k.at = GetTickCount();
@@ -549,6 +621,19 @@ RouteNet::Trip RouteNet::trip(int layer, int fromX, int fromY, int toX, int toY,
                     nearest = i;
                 }
             }
+            // At a partial trip's end (the net's edge): done, the old ways from here until the hero is well off it
+            // (kOffTrip, then worked out again from there): not led back to the edge meanwhile.
+            const int offEdge = cheb(k.points.back().first, k.points.back().second, fromX, fromY);
+            if (k.partial && (offEdge <= kPartialAt || (k.edgeTold && offEdge <= kOffTrip)))
+            {
+                if (!k.edgeTold)
+                {
+                    k.edgeTold = true;
+                    LOG("RouteNet: at the net's edge {},{} on the trip to {},{}: on by the agent's map", k.points.back().first,
+                        k.points.back().second, toX, toY);
+                }
+                return Trip::None;
+            }
             if (nearestD <= kOffTrip)
             {
                 // A door passed since last asked: the hero came out at its other landing.
@@ -590,7 +675,7 @@ RouteNet::Trip RouteNet::trip(int layer, int fromX, int fromY, int toX, int toY,
             // lifted a starved thread, every few seconds (20:15: each stretch 1.5-5 s, «0 in the search»). At the
             // game's own priority it shares the processor as the game's threads do.
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-            Kept r = work(layer, fromX, fromY, toX, toY);
+            Kept r = work(layer, fromX, fromY, toX, toY, true);
             const std::lock_guard done(g_lock);
             g_kept = std::move(r);
             g_busy = false;
@@ -652,7 +737,7 @@ float RouteNet::walkTiles(int fromX, int fromY, int toX, int toY)
             // lifted a starved thread, every few seconds (20:15: each stretch 1.5-5 s, «0 in the search»). At the
             // game's own priority it shares the processor as the game's threads do.
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-            Kept r = work(0, fromX, fromY, toX, toY);
+            Kept r = work(0, fromX, fromY, toX, toY, false);
             r.points.clear();   // only its length is kept
             r.points.shrink_to_fit();
             const std::lock_guard done(g_lock);
