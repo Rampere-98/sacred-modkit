@@ -9469,9 +9469,47 @@ namespace
                                 }
                                 continue;
                             }
-                            if (std::abs(ex - htx) <= 1 && std::abs(ey - hty) <= 1)
+                            // The game's triggers fire on stepping INTO their tile, never on standing on it (Manolito,
+                            // block BZ: 0x6230C0 from the move tick 0x5941A0 only when the creature's tile changes; the
+                            // cave 16.1's exit is the one tile 5741,1422). So a hero beside it steps in (A4, 2026-11-24:
+                            // at 5741,1423 it was taken as «on it» and left untried), and a hero on it steps off to a
+                            // reachable neighbour and back in; only after that is it left for 2 min.
+                            static std::unordered_map<uint64_t, DWORD> s_steppedOff;
+                            if (ex == htx && ey == hty)
                             {
-                                LOG("AutoAttack: on the way out at {},{}: no jump yet, left 2 min", ex, ey);
+                                if (const auto s = s_steppedOff.find(wk); s != s_steppedOff.end() && now - s->second < 120000)
+                                {
+                                    LOG("AutoAttack: on the way out at {},{}: stepped off and in, no jump yet, left 2 min",
+                                        ex, ey);
+                                    s_triedWayOut[wk] = now;
+                                    continue;
+                                }
+                                int ox = 0, oy = 0;
+                                bool off = false;
+                                for (int dy = -1; dy <= 1 && !off; ++dy)
+                                {
+                                    for (int dx = -1; dx <= 1 && !off; ++dx)
+                                    {
+                                        if ((dx || dy) && Whereabouts::reachable(ex + dx, ey + dy) == 1)
+                                        {
+                                            ox = ex + dx;
+                                            oy = ey + dy;
+                                            off = true;
+                                        }
+                                    }
+                                }
+                                s_steppedOff[wk] = now;
+                                if (off)
+                                {
+                                    LOG("AutoAttack: on the way out at {},{}: a step off to {},{} to step in again", ex, ey,
+                                        ox, oy);
+                                    g_questTravel = false;
+                                    g_questAskAt = now;
+                                    ClickWalk::walkTo(static_cast<int32_t>((ox + 0.5) * kTileSize),
+                                                      static_cast<int32_t>((oy + 0.5) * kTileSize), false);
+                                    g_roamAt = 0;
+                                    return;
+                                }
                                 s_triedWayOut[wk] = now;
                                 continue;
                             }
