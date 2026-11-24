@@ -116,4 +116,7 @@ namespace MapMemory
 
     // Writes the file if something changed (at most every `minMs`).
     void save(uint32_t now, uint32_t minMs);
+    // The agent's periodic save: 15 min (docs/Estudio-rutas.md §3: the map file is 44-138 MB of text, all of it
+    // copied under the lock and written again each time; every 5 min was 8 copies × 44 MB). Leaving the game saves now.
+    inline constexpr uint32_t kSaveEveryMs = 900000;
 }

@@ -3117,7 +3117,7 @@ namespace
             noteTrail(self, layer);
             MapMemory::visit(layer, self->x, self->y);
             MapMemory::wantGround(layer, self->x, self->y, hx, hy);
-            MapMemory::save(now, 300000);
+            MapMemory::save(now, MapMemory::kSaveEveryMs);
             // The reach known in the fights too (at a new game the first fight came before any fill).
             Whereabouts::update(layer, static_cast<int>(self->x / kTileSize), static_cast<int>(self->y / kTileSize));
         }
@@ -10708,7 +10708,7 @@ namespace
                 remember(std::format("rodea {} enemigos que aún no le atacan", g_aggroFoes.size()));
             }
         }
-        MapMemory::save(now, 300000);
+        MapMemory::save(now, MapMemory::kSaveEveryMs);
         if (!found)
         {
             // Closed in on every side as far as the tile test tells: wait, as a hit or the player may free it.
@@ -12219,7 +12219,7 @@ void AutoAttack::onFrame()
                 MapMemory::endRadar();
                 MapMemory::setRoute(false);
             }
-            MapMemory::save(now, 300000);
+            MapMemory::save(now, MapMemory::kSaveEveryMs);
         }
     }
     // Gear: put on what is better when calm, sell and buy at a merchant (its own settings, the auto attack on or off).

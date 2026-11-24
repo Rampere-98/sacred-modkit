@@ -8,6 +8,7 @@
 #include "game/combat_learn.h"
 #include "game/frame_hooks.h"
 #include "game/gear.h"
+#include "game/map_memory.h"
 #include "game/whereabouts.h"
 #include "input/inject.h"
 #include "log.h"
@@ -549,6 +550,8 @@ void AgentSave::onFrame()
             g_periodicSave = false;
             g_restartSave = true;
             LOG("AgentSave: a restart is coming: a save due");
+            // The agent's map too (written each 15 min only; on its own thread): the copy is about to be closed.
+            MapMemory::save(now, 1);
         }
     }
     cUI_Manager* ui = cUI_Manager::instance();
