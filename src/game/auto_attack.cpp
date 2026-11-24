@@ -7313,8 +7313,17 @@ namespace
     // tries of its way out, so it never got there).
     bool towardWayOut(DWORD now, const cCreature* self, int32_t x, int32_t y)
     {
-        if (!Whereabouts::area().shutIn ||
-            Whereabouts::reachable(static_cast<int>(x / kTileSize), static_cast<int>(y / kTileSize)) == 1)
+        const int gtx = static_cast<int>(x / kTileSize), gty = static_cast<int>(y / kTileSize);
+        if (!Whereabouts::area().shutIn || Whereabouts::reachable(gtx, gty) == 1)
+        {
+            return false;
+        }
+        // At the pocket's edge (within 4 tiles of its reachable ground, as the shut-in check for the quest's goal takes
+        // it): a house's shut door is no reachable ground, and its tile counted as outside (Estudio-atascos row 3: quest
+        // 1405's goal 5851,3113 indoors, «in by the door at 5855,3122» then «shut in, the goal at 5855,3122 outside: to
+        // the way out … first», A4 2 h 20 min between them). The walk and the door handling take it from here.
+        if (int nx = 0, ny = 0; Whereabouts::nearestReachable(gtx, gty, nx, ny) &&
+                                std::max(std::abs(nx - gtx), std::abs(ny - gty)) <= 4)
         {
             return false;
         }
