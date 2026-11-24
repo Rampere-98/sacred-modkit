@@ -5641,7 +5641,10 @@ namespace
             const auto fits = [&](const QuestGoal& o, double limit) {
                 if (&o == &g || o.blocked || o.tier < 0 || (o.number > 0 && o.number == g.number) ||
                     (o.number > 0 && orderSkipped(o.number, now)) ||
-                    (o.kind != GoalKind::Journal && o.number > 0 && doneAtOnce(o.number)) || offOf(o) > limit)
+                    // A giver of a quest done at once waits for the order; its sign on the way is taken (the owner,
+                    // 2026-11-24, A2 1202/1303/1401 and A8 15005 «not gone to: done at once»): it is blocked while the
+                    // hero is under its ground's level, and taken it goes first as a deadline, as a player would.
+                    (o.kind == GoalKind::Giver && o.number > 0 && doneAtOnce(o.number)) || offOf(o) > limit)
                 {
                     return false;
                 }
@@ -5745,7 +5748,6 @@ namespace
                         const char* why = o.blocked ? "blocked (no way, given up, or under its level)"
                                           : o.tier < 0 ? "left for last (it breaks another quest)"
                                           : o.number > 0 && orderSkipped(o.number, now) ? "skipped a while"
-                                          : o.number > 0 && doneAtOnce(o.number) ? "done at once (a deadline or a defence)"
                                           : d != s_detours.end() && d->second.until &&
                                                   static_cast<int>(now - d->second.until) < 0
                                               ? "gone to before with no quest taken: left 30 min"
