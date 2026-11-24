@@ -2168,6 +2168,11 @@ namespace
     using SelectSlot = void(__fastcall*)(void* taskbar, void*, uint32_t slot, uint32_t flag);
     using SetSlotHand = uint8_t(__fastcall*)(uint8_t* entry, void*, uint32_t slot, uint32_t hand, uint32_t id, uint32_t net);
     constexpr size_t kSlotHands = 0xC18, kActiveSlot = 0xD58;
+    // Weapon slot 5 (index 4) is the free one (the player, 2026-11-24: «pon la ranura 5 para escoger armas de forma
+    // libre, sin criterios de rareza y exclusividad, apenas la ranura 5»; «la ranura donde el agente escogerá la mejor
+    // arma según su propio criterio»): the backpack's weapon worth most by the agent's score, whatever its rarity, its
+    // class or its style and element; the other slots' rules neither bind it nor count it.
+    constexpr int kFreeSlot = 4;
     constexpr size_t kHeroLevel = 0x3FE;
     bool g_slotsReady = false;
 
@@ -2465,7 +2470,7 @@ namespace
         int n = 0;
         for (int slot = 0; slot < open && n < 7; ++slot)
         {
-            const uint32_t w = slot == except ? 0 : slotWeapon(pack, slot);
+            const uint32_t w = slot == except || slot == kFreeSlot ? 0 : slotWeapon(pack, slot);
             if (w && w != candidate)
             {
                 if (const int m = elementMask(w))
@@ -2625,7 +2630,7 @@ namespace
     {
         for (int slot = 0; slot < open; ++slot)
         {
-            const uint32_t w = slot == except ? 0 : slotWeapon(pack, slot);
+            const uint32_t w = slot == except || slot == kFreeSlot ? 0 : slotWeapon(pack, slot);
             if (const int st = styleOf(w); st >= 0)
             {
                 styles[st] = true;
@@ -3051,6 +3056,10 @@ namespace
         {
             for (int b = a + 1; b < open; ++b)
             {
+                if (a == kFreeSlot || b == kFreeSlot)
+                {
+                    continue;
+                }
                 const uint32_t wa = slotWeapon(pack, a), wb = slotWeapon(pack, b);
                 const bool sameStyle = wa && wb && styleOf(wa) == styleOf(wb);
                 const int ma = elementMask(wa), mb = elementMask(wb);
@@ -3078,7 +3087,7 @@ namespace
         for (int slot = 0; slot < open; ++slot)
         {
             const uint32_t w = slotWeapon(pack, slot);
-            if (!w || slot == active || ownClassOnly(hero, w) || (!agentCopy() && !g_agentPut.count(w)) ||
+            if (!w || slot == active || slot == kFreeSlot || ownClassOnly(hero, w) || (!agentCopy() && !g_agentPut.count(w)) ||
                 std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == slot; }))
             {
                 continue;
@@ -3095,6 +3104,11 @@ namespace
             if (!w || slot == active || (!agentCopy() && !g_agentPut.count(w)) ||
                 std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.slot == slot; }))
             {
+                continue;
+            }
+            if (slot == kFreeSlot)
+            {
+                targets.push_back({slot, "a better weapon for it (the free slot: by worth alone)", false, worth(w).score * 1.05f});
                 continue;
             }
             targets.push_back({slot, "a better weapon for it", ownClassOnly(hero, w), rarityScore(worth(w)) + worth(w).score * 0.05f});
@@ -3125,7 +3139,18 @@ namespace
                 }
                 (void)elements;
                 const int style = styleOf(id);
-                if (slotElement(id) < 0 || style < 0 || (relax < 1 && styles[style]) ||
+                // The free slot: by the agent's score alone, any rarity, class, style or element.
+                if (fitExcept == kFreeSlot && style >= 0)
+                {
+                    const float score = worth(id).score;
+                    if (!best || score > bestScore)
+                    {
+                        best = id;
+                        bestScore = score;
+                    }
+                    return;
+                }
+                if (fitExcept == kFreeSlot || slotElement(id) < 0 || style < 0 || (relax < 1 && styles[style]) ||
                     !elementsFit(pack, open, fitExcept, id))
                 {
                     return;
