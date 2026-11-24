@@ -1178,6 +1178,15 @@ namespace
         const double left = tilesTo(hero);
         if (left <= kArrivedTiles)
         {
+            // A routed walk 1.5 tiles short stopped there, its last leg ending a tile before the goal: one last order
+            // onto the clicked spot itself, as the player's click would be (Manolito's live samples, A4 2026-11-24: eight
+            // walks to the cave 16.1's exit 5741,1422 stood at y 1423.8 and never stepped in; its trigger fires only on
+            // entering that one tile).
+            const Cell at = cellOf(hero->x, hero->y), goal = cellOf(g_goalX, g_goalY);
+            if (g_routed && (at.x != goal.x || at.y != goal.y))
+            {
+                sendLeg(engine, hero, g_goalX, g_goalY);
+            }
             finish("arrived");
             return;
         }
