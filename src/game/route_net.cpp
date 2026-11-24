@@ -407,24 +407,22 @@ namespace
             // well nearer than the hero.
             k.noWay = !b.empty();
             int nearest = INT32_MAX;
-            if (partialOk)
-            {
-                // Never an interior's node: the caves sit on layer 0 too, far off the surface (cave 16.1 at 5741,1421),
-                // and the nearest to an eastern goal could be one, the hero led into a pocket.
-                const auto inside = [](const Node& nd) {
-                    if (nd.name.starts_with("dentro"))
+            const auto inBox = [](int x, int y) {
+                for (const Door& d : g_doors)
+                {
+                    if (d.box && x >= d.x0 && x <= d.x1 && y >= d.y0 && y <= d.y1)
                     {
                         return true;
                     }
-                    for (const Door& d : g_doors)
-                    {
-                        if (d.box && nd.x >= d.x0 && nd.x <= d.x1 && nd.y >= d.y0 && nd.y <= d.y1)
-                        {
-                            return true;
-                        }
-                    }
-                    return false;
-                };
+                }
+                return false;
+            };
+            // Never with the goal or the hero in an interior: the caves sit on layer 0 too, far off the surface, and
+            // "nearest by tiles" across that gap means nothing (a surface edge node "nearer" a cave's goal).
+            if (partialOk && !inBox(goalX, goalY) && !inBox(fromX, fromY))
+            {
+                // Never an interior's node: the nearest to an eastern goal could be one, the hero led into a pocket.
+                const auto inside = [&](const Node& nd) { return nd.name.starts_with("dentro") || inBox(nd.x, nd.y); };
                 for (size_t v = 0; v < n; ++v)
                 {
                     if (dist[v] == INT32_MAX || g_nodes[v].layer != layer)
@@ -724,7 +722,8 @@ float RouteNet::walkTiles(int fromX, int fromY, int toX, int toY)
         }
     }
     // The trip walked now may be the one asked for.
-    if (g_kept.ok && same(g_kept) && now - g_kept.at < 300000)
+    // Not a partial trip: its length stops at the net's edge, short of the goal (the portals' share would be wrong).
+    if (g_kept.ok && !g_kept.partial && same(g_kept) && now - g_kept.at < 300000)
     {
         return static_cast<float>(g_kept.tiles);
     }
