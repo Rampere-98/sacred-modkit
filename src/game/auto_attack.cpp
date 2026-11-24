@@ -5765,8 +5765,17 @@ namespace
                 const std::string whyOver = !cur ? std::string("its step done or gone") : unfit(*cur, 60.0);
                 if (!whyOver.empty())
                 {
-                    LOG("AutoAttack: on the way: {} over ({}, after {} s): back to the order's {}",
-                        (s_on >> 32) & 0x7FFFFFFF, whyOver, d.spent / 1000, g.number);
+                    LOG("AutoAttack: on the way: {} over ({}, after {} s; it at {},{}, the hero at {},{}): back to the "
+                        "order's {}",
+                        (s_on >> 32) & 0x7FFFFFFF, whyOver, d.spent / 1000, cur ? cur->x / kTileSize : 0,
+                        cur ? cur->y / kTileSize : 0, heroX / kTileSize, heroY / kTileSize, g.number);
+                    // Over while still in the book (too far, blocked, skipped): not picked again for 5 min (A4,
+                    // 2026-11-24 20:38-20:41, inside the house of 1405: «a report 0 at 36 tiles» and «over (259 tiles
+                    // off)» every 4 s, each flip cutting the walk).
+                    if (on != g_questBook.end() && whyOver != "it is the order's own goal now")
+                    {
+                        d.until = now + 300000;
+                    }
                     // Gone for and not done (the stuck solver, 2026-11-17, A5: 10261 «at 0 tiles» and 1702 over «out of reach,
                     // blocked or skipped» after 252-299 s, picked again the same second, 6 times in 25 min with the 5 min
                     // counted only on the way that ends well): a minute or more spent on it and the goal still there is left
@@ -5837,8 +5846,10 @@ namespace
                     }
                     d.last = now;
                     by = best;
-                    LOG("AutoAttack: on the way: {} {} at {:.0f} tiles, then back to the order's {} ({:.0f} tiles off)",
-                        kindName(*best), best->number, offOf(*best), g.number, offOf(g));
+                    LOG("AutoAttack: on the way: {} {} at {:.0f} tiles ({},{}, who {:x}), then back to the order's {} ({:.0f} "
+                        "tiles off)",
+                        kindName(*best), best->number, offOf(*best), best->x / kTileSize, best->y / kTileSize, best->who,
+                        g.number, offOf(g));
                     cutWalkForDetour();
                 }
                 else
