@@ -5453,9 +5453,13 @@ namespace
         }
         static int32_t s_keptNumber = 0;
         static GoalKind s_keptKind = GoalKind::Journal;
+        // A quest taken from the giver gone to stays the one kept (the owner, 2026-11-24: «cuando un agente coge una
+        // misión, que la empiece y la termine con persistencia»): its goal turns from Giver/Offer to Journal with the same
+        // number, and by kind alone it was no longer kept, so the band's cheaper one took its place.
         const auto kept = [](const QuestGoal& o) {
             return s_keptNumber > 0
-                       ? o.number == s_keptNumber && o.kind == s_keptKind
+                       ? o.number == s_keptNumber &&
+                             (o.kind == s_keptKind || (s_keptKind != GoalKind::Journal && o.kind == GoalKind::Journal))
                        : s_followed && (o.who ^ static_cast<uint32_t>(o.x) ^ (static_cast<uint32_t>(o.y) << 7)) == s_followed;
         };
         std::stable_sort(g_questBook.begin(), g_questBook.end(), [&kept](const QuestGoal& a, const QuestGoal& b) {
@@ -5659,11 +5663,19 @@ namespace
                     }
                 }
             }
-            if (!s_on && offOf(g) > 40.0)
+            // A quest offered, a giver or a report near is gone to even when the order's goal is near too (the owner,
+            // 2026-11-24: «les veo pasar de largo de muchas misiones sin aceptarlas»): a word with someone on the way, the
+            // order's goal after it. A step of another quest under way still waits for the order's goal to be far.
+            if (!s_on)
             {
+                const bool orderFar = offOf(g) > 40.0;
                 const QuestGoal* best = nullptr;
                 for (const QuestGoal& o : g_questBook)
                 {
+                    if (!orderFar && o.kind == GoalKind::Journal)
+                    {
+                        continue;
+                    }
                     const auto d = s_detours.find(keyOf(o));
                     if (d != s_detours.end() && d->second.until && static_cast<int>(now - d->second.until) < 0)
                     {
@@ -5686,6 +5698,34 @@ namespace
                     by = best;
                     LOG("AutoAttack: on the way: {} {} at {:.0f} tiles, then back to the order's {} ({:.0f} tiles off)",
                         kindName(*best), best->number, offOf(*best), g.number, offOf(g));
+                }
+                else
+                {
+                    // An offer 40 tiles or less off not gone to: why, once in 5 min a quest (the owner's «pasan de largo»).
+                    static std::unordered_map<int32_t, DWORD> s_toldWhy;
+                    for (const QuestGoal& o : g_questBook)
+                    {
+                        if (o.kind != GoalKind::Offer || &o == &g || offOf(o) > 40.0)
+                        {
+                            continue;
+                        }
+                        const auto d = s_detours.find(keyOf(o));
+                        const char* why = o.blocked ? "blocked (no way, given up, or under its level)"
+                                          : o.tier < 0 ? "left for last (it breaks another quest)"
+                                          : o.number > 0 && orderSkipped(o.number, now) ? "skipped a while"
+                                          : o.number > 0 && doneAtOnce(o.number) ? "done at once (a deadline or a defence)"
+                                          : d != s_detours.end() && d->second.until &&
+                                                  static_cast<int>(now - d->second.until) < 0
+                                              ? "gone to before with no quest taken: left 30 min"
+                                              : "its way over 60 tiles";
+                        DWORD& told = s_toldWhy[o.number];
+                        if (!told || now - told > 300000)
+                        {
+                            told = now ? now : 1;
+                            LOG("AutoAttack: on the way: quest offered {} at {:.0f} tiles not gone to: {}", o.number,
+                                offOf(o), why);
+                        }
+                    }
                 }
             }
         }
