@@ -7257,22 +7257,6 @@ namespace
         {
             *gameCount = ways.size();
         }
-        // A cave with no DefPos interior near (the bench copy A4, 2026-11-24, at the 1601 pocket 5741,1421: shut in 359
-        // tiles with a ladder in sight, only its own landing 5741,1422 offered, «no jump yet» for hours on A8): the
-        // game's dungeon marks and stairs anchors around the hero itself. After gameCount, so the caller keeps only
-        // the ones on reachable ground.
-        if (int cx = 0, cy = 0; Teleports::caveTriggerNear(htx, hty, Whereabouts::kRadius, cx, cy) &&
-                                std::find(ways.begin(), ways.end(), std::make_pair(cx, cy)) == ways.end())
-        {
-            ways.emplace_back(cx, cy);
-        }
-        for (const auto& a : Teleports::anchorsNear(layer, htx, hty, Whereabouts::kRadius))
-        {
-            if (std::find(ways.begin(), ways.end(), a) == ways.end())
-            {
-                ways.push_back(a);
-            }
-        }
         for (const auto& w : MapMemory::waysOut(layer, htx, hty, Whereabouts::kRadius))
         {
             if (std::find(ways.begin(), ways.end(), w) == ways.end())
