@@ -9258,6 +9258,37 @@ namespace
                             g_onFootUntil = now + 30000;
                         }
                         noteDoor(dx, dy);
+                        // Stepped in by the game's own short walk, aimed past the first tile inside (A4, 2026-11-24
+                        // 19:02-19:06, quest 1405's door 5855,3122: the tile in, 5855,3121, among the squares the open
+                        // door had just marked not walkable, so the planned walk snapped back out 5 tiles and the hero
+                        // went door ↔ out every 3-5 s; the cave 16.1 exit's same cure). 20 s at one door and not in: the
+                        // planned walk as before.
+                        static int s_inDoorX = -1, s_inDoorY = -1;
+                        static DWORD s_inDoorSince = 0, s_inStepAt = 0;
+                        if (s_inDoorX != dx || s_inDoorY != dy || now - s_inStepAt > 10000)
+                        {
+                            s_inDoorX = dx;
+                            s_inDoorY = dy;
+                            s_inDoorSince = now;
+                            s_inStepAt = 0;
+                        }
+                        if (now - s_inDoorSince < 20000)
+                        {
+                            if (now - s_inStepAt > 1500)
+                            {
+                                if (!s_inStepAt)
+                                {
+                                    LOG("AutoAttack: at the door {},{} of the goal {},{}: stepping in toward {},{}", dx, dy,
+                                        gtx, gty, ix, iy);
+                                }
+                                s_inStepAt = now;
+                                int32_t ax = 0, ay = 0;
+                                aimThrough(htx, hty, ix, iy, ax, ay);
+                                ClickWalk::walkTo(ax, ay, false);
+                            }
+                            g_roamAt = 0;
+                            return;
+                        }
                         qx = static_cast<int32_t>((ix + 0.5) * kTileSize);
                         qy = static_cast<int32_t>((iy + 0.5) * kTileSize);
                         qr = 0.0;
