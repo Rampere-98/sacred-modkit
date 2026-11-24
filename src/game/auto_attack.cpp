@@ -2136,14 +2136,25 @@ namespace
         }
         else if (mounted && vampire && now - s_at > 1500)
         {
-            LOG("AutoAttack: the Vampiress in her vampire form: off the horse");
+            static DWORD s_formToldAt = 0;
+            if (now - s_formToldAt > 30000)
+            {
+                s_formToldAt = now;
+                LOG("AutoAttack: the Vampiress in her vampire form: off the horse");
+            }
             code = 0x20A;
         }
         // A fight and her turn due: off first (V1: the vampire form has no mounted variant; the turn may be barred up
         // there), the turn follows on foot (Tactics, chooseArt).
         else if (mounted && Tactics::vampireTurnWanted() && now - s_at > 1500)
         {
-            LOG("AutoAttack: the Vampiress has a fight: off the horse for the vampire form");
+            // Told once per 30 s: in the off events' rest it came every frame (A6 2026-11-24, 39 lines in 2 s).
+            static DWORD s_vampToldAt = 0;
+            if (now - s_vampToldAt > 30000)
+            {
+                s_vampToldAt = now;
+                LOG("AutoAttack: the Vampiress has a fight: off the horse for the vampire form");
+            }
             code = 0x20A;
         }
         else if (mounted && onFoot && now - s_at > 1500)
