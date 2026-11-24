@@ -5991,8 +5991,28 @@ void Gear::prepShopSkip(const char* why)
     // given up only at its 15 min, or once the hero is in the goal's region).
     if (g_prepShop.load())
     {
-        g_prepShopQuiet = GetTickCount() + 60000;
-        LOG("Gear: town stop for region {}: no merchant ({}): looked for again in a minute", g_prepRegion.load(), why);
+        // Three misses for the same region: 30 min before looking again (the stuck solver, 2026-11-24: «town stop
+        // … no merchant, looked for again in a minute» 226-417 times a copy, 8-14% of the time in shops, 35% in A6).
+        static int s_region = -1;
+        static int s_misses = 0;
+        static DWORD s_lastAt = 0;
+        const int region = g_prepRegion.load();
+        const DWORD now = GetTickCount();
+        if (region != s_region || now - s_lastAt > 1800000)
+        {
+            s_region = region;
+            s_misses = 0;
+        }
+        s_lastAt = now;
+        if (++s_misses >= 3)
+        {
+            s_misses = 0;
+            g_prepShopQuiet = now + 1800000;
+            LOG("Gear: town stop for region {}: no merchant ({}) three times: looked for again in 30 min", region, why);
+            return;
+        }
+        g_prepShopQuiet = now + 60000;
+        LOG("Gear: town stop for region {}: no merchant ({}): looked for again in a minute", region, why);
     }
 }
 

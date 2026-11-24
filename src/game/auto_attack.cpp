@@ -6813,6 +6813,7 @@ namespace
     bool waitForCompanions(DWORD now, const cCreature* self)
     {
         static DWORD s_waitSince = 0, s_goOnUntil = 0;
+        static int s_missedInRow = 0;   // waits in a row it never caught up in
         if (s_goOnUntil && static_cast<int>(now - s_goOnUntil) < 0)
         {
             return false;
@@ -6841,6 +6842,7 @@ namespace
             if (s_waitSince)
             {
                 s_goOnUntil = now + 45000;
+                s_missedInRow = 0;
             }
             s_waitSince = 0;
             return false;
@@ -6852,9 +6854,13 @@ namespace
         }
         if (now - s_waitSince > 8000)
         {
-            LOG("AutoAttack: the companion did not come up in 8 s ({:.0f} tiles): going on", farthest);
+            // Each miss in a row a longer while on, up to 5 min (the stuck solver, 2026-11-24: A8 725 waits, A1 236,
+            // against 8-44 in the copies that did most quests; a companion that never keeps up is not waited for).
+            s_missedInRow = std::min(s_missedInRow + 1, 5);
+            LOG("AutoAttack: the companion did not come up in 8 s ({:.0f} tiles): going on for {} min", farthest,
+                s_missedInRow);
             s_waitSince = 0;
-            s_goOnUntil = now + 60000;
+            s_goOnUntil = now + 60000u * static_cast<DWORD>(s_missedInRow);
             return false;
         }
         if (farthest > 18.0)
