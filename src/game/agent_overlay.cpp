@@ -7,7 +7,9 @@
 #include <windows.h>
 #include <imgui.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <mutex>
 #include <vector>
 
@@ -19,7 +21,58 @@ namespace
     {
         bool enabled = true;
         bool intent = true, route = true, target = true, aggro = false, doors = true;
+        bool fps = true;    // the frames per second in the top right corner (the player, 2026-11-24: «agrega un contador de fps»)
     } g_settings;
+
+    // The frames per second over the last half second, and the slowest frame in it, top right, small.
+    void drawFps()
+    {
+        if (!g_settings.fps)
+        {
+            return;
+        }
+        static LARGE_INTEGER s_freq{}, s_last{}, s_windowStart{};
+        static int s_frames = 0;
+        static double s_worst = 0.0, s_shownFps = 0.0, s_shownWorst = 0.0;
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        if (!s_freq.QuadPart)
+        {
+            QueryPerformanceFrequency(&s_freq);
+            s_last = s_windowStart = t;
+            return;
+        }
+        const double frameMs = 1000.0 * static_cast<double>(t.QuadPart - s_last.QuadPart) / static_cast<double>(s_freq.QuadPart);
+        s_last = t;
+        ++s_frames;
+        s_worst = std::max(s_worst, frameMs);
+        const double windowS = static_cast<double>(t.QuadPart - s_windowStart.QuadPart) / static_cast<double>(s_freq.QuadPart);
+        if (windowS >= 0.5)
+        {
+            s_shownFps = s_frames / windowS;
+            s_shownWorst = s_worst;
+            s_frames = 0;
+            s_worst = 0.0;
+            s_windowStart = t;
+        }
+        if (s_shownFps <= 0.0)
+        {
+            return;
+        }
+        char text[48];
+        std::snprintf(text, sizeof(text), "%.0f FPS  %.1f ms", s_shownFps, s_shownWorst);
+        const float scale = Overlay::scale();
+        ImFont* font = ImGui::GetFont();
+        const float size = std::max(13.0f, 16.0f * scale);
+        const ImVec2 extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+        const ImVec2 at(ImGui::GetIO().DisplaySize.x - extent.x - 8.0f * scale, 6.0f * scale);
+        const ImU32 color = s_shownFps >= 50.0 ? IM_COL32(120, 230, 120, 255) : s_shownFps >= 30.0 ? IM_COL32(240, 210, 80, 255)
+                                                                                         : IM_COL32(240, 90, 80, 255);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->AddRectFilled(ImVec2(at.x - 4.0f, at.y - 2.0f), ImVec2(at.x + extent.x + 4.0f, at.y + extent.y + 2.0f),
+                          IM_COL32(0, 0, 0, 140), 3.0f);
+        dl->AddText(font, size, at, color, text);
+    }
 
     struct Prim
     {
@@ -155,6 +208,8 @@ namespace
             ImGui::TextDisabled("Escala aún sin medir: falta ver una criatura en pantalla.");
         }
         ImGui::SeparatorText("Otros overlays del agente");
+        ImGui::Checkbox("Contador de FPS (arriba a la derecha)", &g_settings.fps);
+        ImGui::SetItemTooltip("Fotogramas por segundo del último medio segundo y el más lento de ellos, en ms.");
         ImGui::Checkbox("Radar «Visión del agente» en un lado", &MapMemory::hudShown());
         ImGui::Checkbox("Enemigos vistos, en el mapa", &MapMemory::foesShown());
         ImGui::Checkbox("Misiones, en el mapa", &MapMemory::questsShown());
@@ -168,6 +223,7 @@ namespace
         ModkitMenu::write(ini, L"AgentOverlay", L"Target", g_settings.target);
         ModkitMenu::write(ini, L"AgentOverlay", L"Aggro", g_settings.aggro);
         ModkitMenu::write(ini, L"AgentOverlay", L"Doors", g_settings.doors);
+        ModkitMenu::write(ini, L"AgentOverlay", L"Fps", g_settings.fps);
         ModkitMenu::write(ini, L"Map", L"Hud", MapMemory::hudShown());
         ModkitMenu::write(ini, L"Map", L"Foes", MapMemory::foesShown());
         ModkitMenu::write(ini, L"Map", L"Quests", MapMemory::questsShown());
@@ -193,8 +249,10 @@ void AgentOverlay::install()
         g_settings.target = read(L"Target", 1);
         g_settings.aggro = read(L"Aggro", 0);   // off (the player, 2026-11-10: «no quiero ver más los overlays de aggro»)
         g_settings.doors = read(L"Doors", 1);
+        g_settings.fps = read(L"Fps", 1);
         ModkitMenu::add({"Overlays del agente", &drawMenu, &saveMenu});
         Overlay::addHud(&drawHud);
+        Overlay::addHud(&drawFps);
         LOG("AgentOverlay: {} (intent {}, route {}, target {}, aggro {}, doors {})", g_settings.enabled ? "on" : "off",
             g_settings.intent, g_settings.route, g_settings.target, g_settings.aggro, g_settings.doors);
     });
