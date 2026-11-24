@@ -9288,7 +9288,14 @@ namespace
                                 // Inside a house or cave (another layer) from 15 tiles: the room is small, and the
                                 // walk to the creature's tile led back out by the door (A1 2026-11-13, the Messenger's
                                 // contact 6 tiles off inside: in, a walk, out, in again every 10 s for an hour).
-                                : speakTo ? (layer != 0 ? 15.0 : 6.0) * kTileSize
+                                // The creature on another layer than the hero (a giver inside a house, the hero in the
+                                // street): 15 tiles too, the click on it takes the hero in by the game's own path through
+                                // the door (A3, 2026-11-24: 15052's giver behind a wall at 7 tiles, «there» at 6, walked
+                                // to 7 tiles every 4 s and never clicked, the offer gone to 3 times).
+                                : speakTo ? (layer != 0 || (speaker && *(reinterpret_cast<const uint8_t*>(speaker) + 0x24) !=
+                                                                           static_cast<uint8_t>(layer))
+                                                 ? 15.0
+                                                 : 6.0) * kTileSize
                                           : fixedGoal ? std::min(qr, 2.0 * kTileSize) : qr;
             // Inside a house (a layer other than the surface) the goal is walked up to, 1.5 tiles: «there» by the
             // journal's wide radius, the hero looked around from the doorway and the first step of the look took him
