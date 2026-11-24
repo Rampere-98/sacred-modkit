@@ -814,7 +814,7 @@ bool RouteNet::sameInterior(int ax, int ay, int bx, int by)
     return false;
 }
 
-bool RouteNet::insideAtDoor(int heroX, int heroY, int goalX, int goalY, int* centreX, int* centreY)
+bool RouteNet::insideAtDoor(int heroX, int heroY, int goalX, int goalY, int* centreX, int* centreY, int r)
 {
     const std::lock_guard lock(g_lock);
     if (!g_loaded)
@@ -825,7 +825,7 @@ bool RouteNet::insideAtDoor(int heroX, int heroY, int goalX, int goalY, int* cen
     {
         // The way in: from the outside landing (its node) to the inside one, the box the interior's.
         const Node& from = g_nodes[d.from];
-        if (d.box && cheb(from.x, from.y, goalX, goalY) <= 8 && heroX >= d.x0 && heroX <= d.x1 && heroY >= d.y0 &&
+        if (d.box && cheb(from.x, from.y, goalX, goalY) <= r && heroX >= d.x0 && heroX <= d.x1 && heroY >= d.y0 &&
             heroY <= d.y1 && !(from.x >= d.x0 && from.x <= d.x1 && from.y >= d.y0 && from.y <= d.y1))
         {
             if (centreX && centreY)

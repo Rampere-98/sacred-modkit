@@ -4303,6 +4303,7 @@ namespace
         const DWORD ms = 3600000u << std::min(k.dead - 2, 2);
         k.until = now + ms;
         k.until = k.until ? k.until : 1;
+        k.untilDone = 0; // the hours, not the 45-min cap's «back after 3 quests done»
         LOG("AutoAttack: quest order: {}: its goal came to nothing (time {}): after the whole list for {} h", number, k.dead,
             ms / 3600000);
     }
@@ -7445,6 +7446,14 @@ namespace
         {
             return false;
         }
+        // The goal in this same interior, behind a door inside it (A4 2026-11-24 20:39 and 20:57: quest 1405's man at
+        // 6110,3113 past the inner door 6111,3117, the hero at 6103,3078 in the same house; «staying in» then «to the
+        // way out at 6103,3075 first» in the same ms, and out of the house in 5 s). The inner door is the way, not out.
+        if (const int htx = static_cast<int>(self->x / kTileSize), hty = static_cast<int>(self->y / kTileSize);
+            RouteNet::sameInterior(htx, hty, gtx, gty))
+        {
+            return false;
+        }
         static std::unordered_map<uint64_t, DWORD> s_tried;
         static DWORD s_askAt = 0;
         static uint64_t s_told = 0;
@@ -9180,12 +9189,19 @@ namespace
             // reachable tile nearest the box's centre (A5, 2026-11-17 21:48-21:50 under 2f614be9: quest 502, the
             // thieves' lair, goal 2004,3627 at cave 5.2's door; inside, the walk to the goal went out by the net's door
             // and, outside, the goal tile was the way back in: in and out every 4 s for 2 min, the quest skipped).
-            if (layer == 0 && Lore::questKind() == Lore::QuestKind::Kill)
+            // Any quest, not only a kill (A4, 2026-11-24 20:38-20:49, quest 1405: its goal 5851,3113 a house on the
+            // surface, the man inside at 6110,3113 by door 14.5b; once in, the walk to 5851,3113 went out by the door
+            // again and, outside, the goal was the way back in, 6 min so and the quest left). Other than a kill, only
+            // a goal on the door's own landing (within 2 tiles; 1405's at 1): a merchant or chest in some house with
+            // a goal 8 tiles off its door is no reason to stay in. A goal the journal puts on the creature itself,
+            // once it is loaded inside, is no door's and is walked to as it is.
+            if (layer == 0)
             {
                 const int htx = static_cast<int>(self->x / kTileSize), hty = static_cast<int>(self->y / kTileSize);
                 const int gtx = static_cast<int>(qx / kTileSize), gty = static_cast<int>(qy / kTileSize);
                 int cx = 0, cy = 0, nx = htx, ny = hty;
-                if (RouteNet::insideAtDoor(htx, hty, gtx, gty, &cx, &cy))
+                if (RouteNet::insideAtDoor(htx, hty, gtx, gty, &cx, &cy,
+                                           Lore::questKind() == Lore::QuestKind::Kill ? 8 : 2))
                 {
                     if (!Whereabouts::nearestReachable(cx, cy, nx, ny))
                     {
@@ -9197,8 +9213,8 @@ namespace
                     if (ck != s_toldCave)
                     {
                         s_toldCave = ck;
-                        LOG("AutoAttack: inside the cave whose door is the kill quest's goal {},{}: the fights sought "
-                            "inside, from {},{}",
+                        LOG("AutoAttack: inside the house or cave whose door is the quest's goal {},{}: sought inside, "
+                            "from {},{}",
                             gtx, gty, nx, ny);
                     }
                     qx = static_cast<int32_t>((nx + 0.5) * kTileSize);
