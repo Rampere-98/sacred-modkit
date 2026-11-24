@@ -314,8 +314,60 @@ namespace
     }
 }
 
+namespace
+{
+    // The coordinator's lab teleport, only in the bench copies SacredA4 and SacredA5 (their cheats are the
+    // coordinator's; the player, 2026-11-24: «forzar los resultados de A4 para adelantar el proceso»): a file
+    // SacredBild-teleport holding "x y [layer]" in tiles moves the hero there once, to reproduce a stuck place at once.
+    // Never read in any other folder, so neither the agent nor the player's own game can use it.
+    void labTeleport()
+    {
+        static DWORD s_at = 0;
+        static int s_lab = -1;
+        const DWORD now = GetTickCount();
+        if (now - s_at < 1000)
+        {
+            return;
+        }
+        s_at = now;
+        const std::wstring dir = gameDir();
+        if (s_lab < 0)
+        {
+            std::wstring d = dir.substr(0, dir.size() - 1);
+            d = d.substr(d.find_last_of(L"\\/") + 1);
+            s_lab = (_wcsicmp(d.c_str(), L"SacredA4") == 0 || _wcsicmp(d.c_str(), L"SacredA5") == 0) ? 1 : 0;
+        }
+        if (!s_lab)
+        {
+            return;
+        }
+        const std::wstring file = dir + L"SacredBild-teleport";
+        FILE* f = _wfopen(file.c_str(), L"rb");
+        if (!f)
+        {
+            return;
+        }
+        int tx = 0, ty = 0, layer = 0;
+        const int n = std::fscanf(f, "%d %d %d", &tx, &ty, &layer);
+        std::fclose(f);
+        DeleteFileW(file.c_str());
+        if (n < 2)
+        {
+            LOG("Teleports: lab teleport file unreadable (want \"x y [layer]\"): ignored");
+            return;
+        }
+        if (n < 3)
+        {
+            layer = 0;
+        }
+        const bool ok = Teleports::playerTeleport(tx, ty, layer);
+        LOG("Teleports: lab teleport (bench copy) to {},{} layer {}: {}", tx, ty, layer, ok ? "done" : "refused");
+    }
+}
+
 void Teleports::onFrame()
 {
+    labTeleport();
     if (!g_snap.since)
     {
         return;
