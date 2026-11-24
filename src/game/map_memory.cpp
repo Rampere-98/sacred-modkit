@@ -1760,7 +1760,12 @@ float MapMemory::routeTiles(int layer, int fromX, int fromY, int toX, int toY)
         const float moved = static_cast<float>(std::hypot(fromX - it->second.fromX, fromY - it->second.fromY));
         // A tenth of the way may be walked before it is worked out again (the agent study, 2026-11-24: A5 searched the
         // way to one goal 260 tiles off 126 times in 40 min, a new box each 24 tiles ridden).
-        return moved <= std::max(24.0f, it->second.tiles * 0.1f) ? it->second.tiles + moved : -1.0f;
+        // By how much nearer (or farther) the goal is as the crow flies, not by the tiles walked: walking toward the goal
+        // added them all and the length grew (docs/Estudio-rutas.md §2.2, a detour's goal let go as «out of reach»).
+        const float dLast = static_cast<float>(std::hypot(toX - it->second.fromX, toY - it->second.fromY));
+        const float dNow = static_cast<float>(std::hypot(toX - fromX, toY - fromY));
+        return moved <= std::max(24.0f, it->second.tiles * 0.1f) ? std::max(dNow, it->second.tiles + (dNow - dLast))
+                                                                 : -1.0f;
     };
     if (g_lenPending.count(key))
     {

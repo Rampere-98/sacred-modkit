@@ -5649,18 +5649,46 @@ namespace
             const auto offOf = [&](const QuestGoal& o) {
                 return std::hypot(static_cast<double>(o.x - heroX), static_cast<double>(o.y - heroY)) / kTileSize;
             };
-            const auto fits = [&](const QuestGoal& o, double limit) {
-                if (&o == &g || o.blocked || o.tier < 0 || (o.number > 0 && o.number == g.number) ||
-                    (o.number > 0 && orderSkipped(o.number, now)) ||
-                    // A giver of a quest done at once waits for the order; its sign on the way is taken (the owner,
-                    // 2026-11-24, A2 1202/1303/1401 and A8 15005 «not gone to: done at once»): it is blocked while the
-                    // hero is under its ground's level, and taken it goes first as a deadline, as a player would.
-                    (o.kind == GoalKind::Giver && o.number > 0 && doneAtOnce(o.number)) || offOf(o) > limit)
+            // Why a goal is not one to go to on the way (empty: it is). Each part said apart, the way's length with it
+            // (docs/Estudio-rutas.md §2.1: «its way over 60 tiles» was the catch-all, no route measured).
+            const auto unfit = [&](const QuestGoal& o, double limit) -> std::string {
+                if (&o == &g || (o.number > 0 && o.number == g.number))
                 {
-                    return false;
+                    return "it is the order's own goal now";
                 }
-                return wayLength(heroX, heroY, o.x, o.y) / kTileSize <= limit * 1.5;
+                if (o.blocked)
+                {
+                    return "blocked (no way, given up, or under its level)";
+                }
+                if (o.tier < 0)
+                {
+                    return "left for last (it breaks another quest)";
+                }
+                if (o.number > 0 && orderSkipped(o.number, now))
+                {
+                    return "skipped a while";
+                }
+                // A giver of a quest done at once waits for the order; its sign on the way is taken (the owner,
+                // 2026-11-24, A2 1202/1303/1401 and A8 15005 «not gone to: done at once»): it is blocked while the
+                // hero is under its ground's level, and taken it goes first as a deadline, as a player would.
+                if (o.kind == GoalKind::Giver && o.number > 0 && doneAtOnce(o.number))
+                {
+                    return "a quest done at once: its giver waits for the order";
+                }
+                if (offOf(o) > limit)
+                {
+                    return std::format("{:.0f} tiles off (over {:.0f})", offOf(o), limit);
+                }
+                // A way round a wall or a yard in a town: 1.1-1.6 times the line (Estudio-rutas §2.4, A2's 1202 at 63
+                // tiles for 40): 70 for an offer 40 off, 90 to keep on a detour.
+                const double way = wayLength(heroX, heroY, o.x, o.y) / kTileSize, cap = std::max(limit * 1.5, limit + 30.0);
+                if (way > cap)
+                {
+                    return std::format("its way {:.0f} tiles (over {:.0f})", way, cap);
+                }
+                return {};
             };
+            const auto fits = [&](const QuestGoal& o, double limit) { return unfit(o, limit).empty(); };
             const auto kindName = [](const QuestGoal& o) {
                 return o.kind == GoalKind::Journal ? (o.main ? "main quest" : "side quest")
                        : o.kind == GoalKind::Offer ? "a quest offered"
@@ -5672,12 +5700,11 @@ namespace
                 const auto on = std::find_if(g_questBook.begin(), g_questBook.end(),
                                              [&](const QuestGoal& o) { return keyOf(o) == s_on; });
                 Detour& d = s_detours[s_on];
-                if (on == g_questBook.end() || !fits(*on, 60.0))
+                const std::string whyOver = on == g_questBook.end() ? std::string("its step done or gone") : unfit(*on, 60.0);
+                if (!whyOver.empty())
                 {
                     LOG("AutoAttack: on the way: {} over ({}, after {} s): back to the order's {}",
-                        (s_on >> 32) & 0x7FFFFFFF,
-                        on == g_questBook.end() ? "its step done or gone" : "out of reach, blocked or skipped",
-                        d.spent / 1000, g.number);
+                        (s_on >> 32) & 0x7FFFFFFF, whyOver, d.spent / 1000, g.number);
                     // Gone for and not done (the stuck solver, 2026-11-17, A5: 10261 «at 0 tiles» and 1702 over «out of reach,
                     // blocked or skipped» after 252-299 s, picked again the same second, 6 times in 25 min with the 5 min
                     // counted only on the way that ends well): a minute or more spent on it and the goal still there is left
@@ -5759,13 +5786,13 @@ namespace
                             continue;
                         }
                         const auto d = s_detours.find(keyOf(o));
-                        const char* why = o.blocked ? "blocked (no way, given up, or under its level)"
-                                          : o.tier < 0 ? "left for last (it breaks another quest)"
-                                          : o.number > 0 && orderSkipped(o.number, now) ? "skipped a while"
-                                          : d != s_detours.end() && d->second.until &&
-                                                  static_cast<int>(now - d->second.until) < 0
-                                              ? "gone to before with no quest taken: left 30 min"
-                                              : "its way over 60 tiles";
+                        std::string why = unfit(o, 40.0);
+                        if (why.empty())
+                        {
+                            why = d != s_detours.end() && d->second.until && static_cast<int>(now - d->second.until) < 0
+                                      ? "gone to before with no quest taken: left 30 min"
+                                      : "none of the reasons (it fits: gone to next pass)";
+                        }
                         DWORD& told = s_toldWhy[o.number];
                         if (!told || now - told > 300000)
                         {
