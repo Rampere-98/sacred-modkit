@@ -1758,11 +1758,17 @@ float MapMemory::routeTiles(int layer, int fromX, int fromY, int toX, int toY)
             return -1.0f;
         }
         const float moved = static_cast<float>(std::hypot(fromX - it->second.fromX, fromY - it->second.fromY));
-        return moved <= 24.0f ? it->second.tiles + moved : -1.0f;
+        // A tenth of the way may be walked before it is worked out again (the agent study, 2026-11-24: A5 searched the
+        // way to one goal 260 tiles off 126 times in 40 min, a new box each 24 tiles ridden).
+        return moved <= std::max(24.0f, it->second.tiles * 0.1f) ? it->second.tiles + moved : -1.0f;
     };
     if (g_lenPending.count(key))
     {
         return fromLast();
+    }
+    if (const float last = fromLast(); last >= 0.0f)
+    {
+        return last;
     }
     // A short queue: the newest asked first, the oldest dropped (asked again if still wanted).
     if (g_lenJobs.size() >= 8)
@@ -2274,6 +2280,11 @@ bool MapMemory::routeWithin(int layer, int fromX, int fromY, int toX, int toY, i
     // The roads first (the player, 2026-11-10: «las carreteras mapeadas y el agente se moviera por ellas»): on the
     // surface, by the world files (Manolito, block R2), a road tile costs 6, so far walks follow them; ground never
     // seen is judged by the files too (walkable 14, not walkable no way), unknown stays 22.
+    std::vector<uint8_t> unseen(step.size());
+    for (size_t i = 0; i < step.size(); ++i)
+    {
+        unseen[i] = step[i] == 22;
+    }
     if (layer == 0)
     {
         std::vector<int8_t> files(static_cast<size_t>(w) * h);
@@ -2307,6 +2318,30 @@ bool MapMemory::routeWithin(int layer, int fromX, int fromY, int toX, int toY, i
                 {
                     step[static_cast<size_t>(y - y0) * w + (x - x0)] = opens ? 12 : 0;
                 }
+            }
+        }
+    }
+    // Never-seen ground beside ground seen barred is dear (the stuck solver, 2026-11-24: A6's wide route left its valley
+    // over unknown squares along a ridge seen as 19 rows of rock, the files calling them walkable; the walk ran into the
+    // mountain every 20 s): 30, so the route keeps to the known ways and crosses the unknown only where nothing else goes.
+    for (int y = 1; y + 1 < h; ++y)
+    {
+        for (int x = 1; x + 1 < w; ++x)
+        {
+            const size_t i = static_cast<size_t>(y) * w + x;
+            if (!unseen[i] || !step[i] || step[i] >= 30)
+            {
+                continue;
+            }
+            bool byWall = false;
+            for (int k = 0; k < 9 && !byWall; ++k)
+            {
+                const size_t j = static_cast<size_t>(y + k / 3 - 1) * w + (x + k % 3 - 1);
+                byWall = !unseen[j] && !step[j];
+            }
+            if (byWall)
+            {
+                step[i] = 30;
             }
         }
     }
