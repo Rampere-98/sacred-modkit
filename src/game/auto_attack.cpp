@@ -4841,6 +4841,17 @@ namespace
         }
     }
 
+    // A detour on the way starts or ends: the walk under way is to the other goal, cut (travelTo sends a new step only
+    // with no walk routing: Estudio-rutas §3, A2 11:34:30, the detour to the giver 39 tiles off while ClickWalk went on
+    // to the order's goal 454 tiles off, «over (out of reach…)» 3-156 s later). Only the agent's own walk is cut.
+    void cutWalkForDetour()
+    {
+        if (ClickWalk::routing())
+        {
+            ClickWalk::cancel();
+        }
+    }
+
     bool questTarget(int32_t heroX, int32_t heroY, int32_t& x, int32_t& y, double& radius, uint32_t& who)
     {
         const DWORD now = GetTickCount();
@@ -5676,6 +5687,7 @@ namespace
                         d.until = now + 1800000;
                     }
                     s_on = 0;
+                    cutWalkForDetour();
                 }
                 else
                 {
@@ -5691,6 +5703,7 @@ namespace
                             "order's {}",
                             kindName(*on), on->number, g.number);
                         s_on = 0;
+                        cutWalkForDetour();
                     }
                     else
                     {
@@ -5733,6 +5746,7 @@ namespace
                     by = best;
                     LOG("AutoAttack: on the way: {} {} at {:.0f} tiles, then back to the order's {} ({:.0f} tiles off)",
                         kindName(*best), best->number, offOf(*best), g.number, offOf(g));
+                    cutWalkForDetour();
                 }
                 else
                 {
