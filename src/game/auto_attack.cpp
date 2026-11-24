@@ -9463,6 +9463,12 @@ namespace
                             {
                                 if (const auto s = s_steppedOff.find(wk); s != s_steppedOff.end() && now - s->second < 120000)
                                 {
+                                    // The step off still under way (A4 2026-11-24: taken as done 150 ms after it went out).
+                                    if (now - s->second < 8000)
+                                    {
+                                        g_roamAt = 0;
+                                        return;
+                                    }
                                     LOG("AutoAttack: on the way out at {},{}: stepped off and in, no jump yet, left 2 min",
                                         ex, ey);
                                     s_triedWayOut[wk] = now;
@@ -9520,8 +9526,18 @@ namespace
                             if (!ClickWalk::routing() && now - g_questAskAt > 4000)
                             {
                                 g_questAskAt = now;
-                                ClickWalk::walkTo(static_cast<int32_t>((ex + 0.5) * kTileSize),
-                                                  static_cast<int32_t>((ey + 0.5) * kTileSize), false);
+                                // Near it, aimed 1.5 tiles past it, through it: a walk ordered onto the tile itself
+                                // stood 1.3 tiles short (Manolito's live samples, A4 2026-11-24: y 1423.8 for the cave
+                                // 16.1's exit 5741,1422, never stepped in); the one ordered past it went through and
+                                // jumped. The game's path finder stops at the nearest it can reach beyond.
+                                double tx = ex + 0.5, ty = ey + 0.5;
+                                if (std::abs(ex - htx) <= 3 && std::abs(ey - hty) <= 3)
+                                {
+                                    tx += 1.5 * ((ex > htx) - (ex < htx));
+                                    ty += 1.5 * ((ey > hty) - (ey < hty));
+                                }
+                                ClickWalk::walkTo(static_cast<int32_t>(tx * kTileSize), static_cast<int32_t>(ty * kTileSize),
+                                                  false);
                             }
                             MapMemory::setRoute(true, static_cast<int32_t>((ex + 0.5) * kTileSize),
                                                 static_cast<int32_t>((ey + 0.5) * kTileSize));
