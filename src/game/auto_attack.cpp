@@ -3258,21 +3258,39 @@ namespace
                 s_untouchedSince = now;
             }
             const bool untouched12 = now - s_untouchedSince > 12000 && currentDistance > melee;
+            // Within the melee too: 25 s at its side, striking and casting, its health never down (the owner,
+            // 2026-11-24, «atasco de A1»: the Seraphim in a cave casting at a level 38 thief by her side, «art 13 did
+            // nothing seen» every 2 s for minutes; casting there counted as progress, so she never left it).
+            static uint32_t s_closeUntouchedOf = 0;
+            static DWORD s_closeUntouchedSince = 0;
+            if (s_closeUntouchedOf != g_target || hurtIt || currentDistance > melee)
+            {
+                s_closeUntouchedOf = g_target;
+                s_closeUntouchedSince = now;
+            }
+            const bool untouchedClose = now - s_closeUntouchedSince > 25000;
             // Striking over a fence (a spear's reach) is no progress: only its health going down is.
             const cObject* targetObject = objects && self ? objects->object(g_target) : nullptr;
             const bool fencedOff = targetObject && currentDistance >= 1.5f * static_cast<float>(kTileSize) &&
                                    lineBlocked(targetObject);
-            if (g_targetBest <= 0.0f || currentDistance < g_targetBest * 0.9f || currentDistance < range * 0.3f ||
-                hurtIt || (striking && currentDistance < melee && !fencedOff) ||
-                // A step back to shoot from afar is no failure to reach it (the stuck solver, 2026-11-14: A1 with a
-                // ranged weapon, «keeping the distance» and the enemy it fought given up as out of reach).
-                (g_keptDistanceAt && now - g_keptDistanceAt < 3000))
+            const bool progress =
+                !untouchedClose &&
+                (g_targetBest <= 0.0f || currentDistance < g_targetBest * 0.9f || currentDistance < range * 0.3f ||
+                 hurtIt || (striking && currentDistance < melee && !fencedOff) ||
+                 // A step back to shoot from afar is no failure to reach it (the stuck solver, 2026-11-14: A1 with a
+                 // ranged weapon, «keeping the distance» and the enemy it fought given up as out of reach).
+                 (g_keptDistanceAt && now - g_keptDistanceAt < 3000));
+            if (progress)
             {
                 g_targetBest = g_targetBest > 0.0f ? std::min(g_targetBest, currentDistance) : currentDistance;
                 g_targetBestAt = now;
             }
-            else if (now - g_targetBestAt > kStuckMs || untouched12)
+            else if (untouchedClose || now - g_targetBestAt > kStuckMs || untouched12)
             {
+                if (untouchedClose)
+                {
+                    LOG("AutoAttack: {:x} by the hero's side 25 s, struck and cast at, its health never down: left", g_target);
+                }
                 // Each time again the same one, three times as long (20 s, 1 min, 3 min, then 10 min). Seen live
                 // (2026-11-10): an enemy across the water taken again every 20 s for three hours, the 4 s chase
                 // each time starting the stuck guard's watch again, so the hero never moved on.
