@@ -4087,6 +4087,7 @@ namespace
         int count = 0;          // skips in a row
         int level = 0, done = 0, failed = 0;
         int untilDone = 0;      // the cap's: back once this many quests are done (or its 2 h are over), 0 none
+        int dead = 0;           // times its goal came to nothing (deadGoal), until a step of it is done
     };
     std::unordered_map<int32_t, OrderSkip> g_orderSkips;
     // Times in a row the goal followed was given up by the travel (no way for now, left a few minutes) with no step
@@ -4116,16 +4117,18 @@ namespace
         char line[96];
         while (std::fgets(line, sizeof(line), f))
         {
-            int number = 0, count = 0, level = 0, done = 0, failed = 0, untilDone = 0;
+            int number = 0, count = 0, level = 0, done = 0, failed = 0, untilDone = 0, dead = 0;
             unsigned long left = 0;
-            if (std::sscanf(line, "%d %d %d %d %d %lu %d", &number, &count, &level, &done, &failed, &left, &untilDone) < 6)
+            if (std::sscanf(line, "%d %d %d %d %d %lu %d %d", &number, &count, &level, &done, &failed, &left, &untilDone,
+                            &dead) < 6)
             {
                 continue;
             }
-            if (number > 0 && count > 0)
+            if (number > 0 && (count > 0 || dead > 0))
             {
                 OrderSkip& k = g_orderSkips[number];
                 k.count = count;
+                k.dead = dead;
                 k.level = level;
                 k.done = done;
                 k.failed = failed;
@@ -4146,7 +4149,8 @@ namespace
             {
                 const unsigned long left =
                     k.until && static_cast<int>(now - k.until) < 0 ? static_cast<unsigned long>(k.until - now) : 0;
-                std::fprintf(f, "%d %d %d %d %d %lu %d\n", number, k.count, k.level, k.done, k.failed, left, k.untilDone);
+                std::fprintf(f, "%d %d %d %d %d %lu %d %d\n", number, k.count, k.level, k.done, k.failed, left, k.untilDone,
+                             k.dead);
             }
             std::fclose(f);
         }
@@ -4266,6 +4270,41 @@ namespace
         {
             LOG("AutoAttack: quest order: {} skipped: {} (tried again in 30 min)", number, why);
         }
+    }
+    // A quest's goal that came to nothing again (docs/Estudio-atascos.md row 1: «6 min at/around the goal» 135 times
+    // over the 8 copies, ≥ 13.5 h; 15016 at 2438,3335 22 times, each left 15-30 min and back, the counts in memory lost
+    // at every restart): the first time only the travel's block; from the second on the quest waits after the whole
+    // list 1 h, 2 h, then 4 h, kept in SacredBild-skips.txt. A step of it done erases its entry (questStall), and so the
+    // count. The two warnings of one stretch («at» then «around», under 10 min apart) count once.
+    void deadGoal(int32_t number, DWORD now)
+    {
+        if (number <= 0)
+        {
+            return;
+        }
+        static std::unordered_map<int32_t, DWORD> s_lastAt;
+        if (const auto it = s_lastAt.find(number); it != s_lastAt.end() && now - it->second < 600000)
+        {
+            return;
+        }
+        s_lastAt[number] = now;
+        if (!g_skipsRead)
+        {
+            readSkips(now);
+        }
+        OrderSkip& k = g_orderSkips[number];
+        ++k.dead;
+        g_skipsDirty = true;
+        if (k.dead < 2)
+        {
+            LOG("AutoAttack: quest order: {}: its goal came to nothing (time 1)", number);
+            return;
+        }
+        const DWORD ms = 3600000u << std::min(k.dead - 2, 2);
+        k.until = now + ms;
+        k.until = k.until ? k.until : 1;
+        LOG("AutoAttack: quest order: {}: its goal came to nothing (time {}): after the whole list for {} h", number, k.dead,
+            ms / 3600000);
     }
     int32_t g_orderNext = 0;                                // the first of the list neither done nor failed
     int g_orderPos = 0;                                     // its place, from 1
@@ -9786,6 +9825,10 @@ namespace
                 }
                 LOG("AutoAttack: 6 min at the quest's goal {},{} and nothing came of it: left 15 min",
                     static_cast<int>(qx / kTileSize), static_cast<int>(qy / kTileSize));
+                if (!g_questBook.empty())
+                {
+                    deadGoal(goalWalked().number, now);
+                }
                 s_atGoalSince = 0;
                 questHere = false;
                 g_roamAt = 0;
@@ -10355,6 +10398,7 @@ namespace
                         "left 30 min",
                         static_cast<int>(looked.x / kTileSize), static_cast<int>(looked.y / kTileSize), looked.number);
                     Findings::note("quest", looked.x, looked.y, "a goal never met: 6 min around it, left 30 min");
+                    deadGoal(looked.number, now);
                     g_roamAt = 0;
                     return;
                 }
