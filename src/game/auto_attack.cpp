@@ -5258,6 +5258,25 @@ namespace
                         }
                     }
                 }
+                if (q.number == forcedQuest())
+                {
+                    static DWORD s_forcedTold = 0;
+                    if (!s_forcedTold || now - s_forcedTold > 300000)
+                    {
+                        s_forcedTold = now ? now : 1;
+                        const auto has = [&](const auto& v) {
+                            return std::find(v.begin(), v.end(), q.number) != v.end();
+                        };
+                        LOG("AutoAttack: [Test] forced quest {}: on offer {}, script value {}, done {}, failed {}, in the book "
+                            "{}, giver visited {}, hero level {}, giver ground {}",
+                            q.number, onOffer, value == s_values.end() ? -1 : static_cast<int>(value->second), has(g_doneNumbers),
+                            has(g_failedNow),
+                            std::any_of(g_questBook.begin(), g_questBook.end(), [&](const QuestGoal& o) {
+                                return o.number == q.number;
+                            }),
+                            std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end(), heroLv, q.lo);
+                    }
+                }
                 if (onOffer && !inJournal && q.number == forcedQuest())
                 {
                     // Test copies: the forced quest's giver is gone to once more, whatever it was told before.
