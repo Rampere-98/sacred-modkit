@@ -5535,10 +5535,28 @@ namespace
                              (o.kind == s_keptKind || (s_keptKind != GoalKind::Journal && o.kind == GoalKind::Journal))
                        : s_followed && (o.who ^ static_cast<uint32_t>(o.x) ^ (static_cast<uint32_t>(o.y) << 7)) == s_followed;
         };
-        std::stable_sort(g_questBook.begin(), g_questBook.end(), [&kept](const QuestGoal& a, const QuestGoal& b) {
+        // A test copy's ask (the coordinator, 2026-11-25: «prueba la 1405 en A4 sin esperar horas»): [Test] ForceQuest=n in
+        // SacredBild.ini sends the hero first to quest n whenever it is in the book. Read once; absent or 0 = off.
+        static int s_forceQuest = -1;
+        if (s_forceQuest < 0)
+        {
+            const std::wstring sk = skipsPath();
+            const std::wstring ini = sk.substr(0, sk.find_last_of(L"\\/") + 1) + L"SacredBild.ini";
+            s_forceQuest = static_cast<int>(GetPrivateProfileIntW(L"Test", L"ForceQuest", 0, ini.c_str()));
+            if (s_forceQuest > 0)
+            {
+                LOG("AutoAttack: [Test] ForceQuest={}: that quest goes first when it is in the book", s_forceQuest);
+            }
+        }
+        const int forceQuest = s_forceQuest;
+        std::stable_sort(g_questBook.begin(), g_questBook.end(), [&kept, forceQuest](const QuestGoal& a, const QuestGoal& b) {
             if (a.blocked != b.blocked)
             {
                 return !a.blocked;
+            }
+            if (forceQuest > 0 && (a.number == forceQuest) != (b.number == forceQuest))
+            {
+                return a.number == forceQuest;
             }
             // By tier first (an escort or a deadline, a quest lost if left, the rest, those for last), then the goal
             // followed, then the soonest deadline, the campaign's order and the nearest.
