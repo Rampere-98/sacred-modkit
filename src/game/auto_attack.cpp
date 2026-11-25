@@ -4106,6 +4106,22 @@ namespace
         const std::wstring path = giversPath();
         return path.substr(0, path.find_last_of(L"\\/") + 1) + L"SacredBild-skips.txt";
     }
+    // [Test] ForceQuest=n in SacredBild.ini (test copies only): quest n goes first, its giver included. 0 = off.
+    int forcedQuest()
+    {
+        static int s_force = -1;
+        if (s_force < 0)
+        {
+            const std::wstring sk = skipsPath();
+            const std::wstring ini = sk.substr(0, sk.find_last_of(L"\\/") + 1) + L"SacredBild.ini";
+            s_force = static_cast<int>(GetPrivateProfileIntW(L"Test", L"ForceQuest", 0, ini.c_str()));
+            if (s_force > 0)
+            {
+                LOG("AutoAttack: [Test] ForceQuest={}: that quest goes first, its giver too", s_force);
+            }
+        }
+        return s_force;
+    }
     void readSkips(DWORD now)
     {
         g_skipsRead = true;
@@ -5242,6 +5258,18 @@ namespace
                         }
                     }
                 }
+                if (onOffer && !inJournal && q.number == forcedQuest())
+                {
+                    // Test copies: the forced quest's giver is gone to once more, whatever it was told before.
+                    static DWORD s_forcedAt = 0;
+                    if (const auto v = std::find(s_visited.begin(), s_visited.end(), q.number);
+                        v != s_visited.end() && (!s_forcedAt || now - s_forcedAt > 900000))
+                    {
+                        s_forcedAt = now ? now : 1;
+                        s_visited.erase(v);
+                        g_giverTime.erase(q.number);
+                    }
+                }
                 if (!onOffer || inJournal ||
                     std::find(s_visited.begin(), s_visited.end(), q.number) != s_visited.end())
                 {
@@ -5275,11 +5303,11 @@ namespace
                     }
                     continue;
                 }
-                if (orderSkipped(q.number, now))
+                if (q.number != forcedQuest() && orderSkipped(q.number, now))
                 {
                     continue;
                 }
-                if ((heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number) ||
+                if ((q.number != forcedQuest() && heroLv > 0 && q.lo > heroLv + 2) || tooLow(q.number) ||
                     (doneAtOnce(q.number) && heroLv > 0 && heroLv < q.lo))
                 {
                     continue;
@@ -5295,6 +5323,10 @@ namespace
             }
             // The three first in the campaign's order (then the nearest), not the three nearest (the owner, 2026-11-17).
             std::sort(nearest.begin(), nearest.end(), [](const auto& a, const auto& b) {
+                if (const int fq = forcedQuest(); fq > 0 && (a.second->number == fq) != (b.second->number == fq))
+                {
+                    return a.second->number == fq;
+                }
                 const int ra = orderRank(a.second->number), rb = orderRank(b.second->number);
                 if (ra != rb)
                 {
@@ -5537,18 +5569,7 @@ namespace
         };
         // A test copy's ask (the coordinator, 2026-11-25: «prueba la 1405 en A4 sin esperar horas»): [Test] ForceQuest=n in
         // SacredBild.ini sends the hero first to quest n whenever it is in the book. Read once; absent or 0 = off.
-        static int s_forceQuest = -1;
-        if (s_forceQuest < 0)
-        {
-            const std::wstring sk = skipsPath();
-            const std::wstring ini = sk.substr(0, sk.find_last_of(L"\\/") + 1) + L"SacredBild.ini";
-            s_forceQuest = static_cast<int>(GetPrivateProfileIntW(L"Test", L"ForceQuest", 0, ini.c_str()));
-            if (s_forceQuest > 0)
-            {
-                LOG("AutoAttack: [Test] ForceQuest={}: that quest goes first when it is in the book", s_forceQuest);
-            }
-        }
-        const int forceQuest = s_forceQuest;
+        const int forceQuest = forcedQuest();
         std::stable_sort(g_questBook.begin(), g_questBook.end(), [&kept, forceQuest](const QuestGoal& a, const QuestGoal& b) {
             if (a.blocked != b.blocked)
             {
